@@ -307,3 +307,35 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 ---
 
 *More sections to follow: Crane Schedule, Daily Briefing, Toolbox Talk, LOLER Register, Supervisor Checks, Operator Checks.*
+
+---
+
+## 8. Current Build Status
+
+### Built & Working
+
+| Area | Details |
+|---|---|
+| **Auth flow** | Email OTP via Supabase Auth — send PIN, verify PIN, session persistence |
+| **main_admin screens** | Companies list, Company Detail, Site Detail (read-only), Archived Companies |
+| **company_admin screens** | Sites list, Site Detail (with Appointed Person + Operatives sections), Archived Sites |
+| **Appointed Person dashboard** | Home screen with quick-access cards to all site areas |
+| **Operatives screens** | Add, edit, archive, restore operatives (crane_supervisor, crane_operator, slinger_signaller, subcontractor_admin) |
+| **Cranes screens** | Crane register — add, edit, archive, restore cranes |
+| **Subcontractors screens** | Subcontractor company list — add, edit, archive, restore |
+| **Crane Logs screen** | Open log, edit log, close log, log list with filters, log detail view |
+| **Supabase schema** | Tables for companies, sites, users, cranes, subcontractors, crane_logs with RLS policies |
+| **Edge Function — user creation** | Creates Supabase Auth user and inserts profile row in a single server-side call |
+| **WatermelonDB setup** | Schema defined, models created, database initialised in app |
+
+### Pending / Not Yet Built
+
+| Area | Status |
+|---|---|
+| **Crane Schedule** | Screen shell only — no logic implemented |
+| **Daily Briefing** | Screen shell only — no logic implemented |
+| **Toolbox Talk** | Screen shell only — no logic implemented |
+| **LOLER Register** | Screen shell only — no logic implemented |
+| **Supervisor Checks** | Screen shell only — no logic implemented |
+| **Operator Checks** | Screen shell only — no logic implemented |
+| **Full offline sync testing** | WatermelonDB ↔ Supabase sync wired up but end-to-end offline/reconnect scenarios not fully tested |
