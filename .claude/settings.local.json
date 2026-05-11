@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\alexg\\\\OneDrive\\\\Desktop\\\\AppProjects\\\\lifting-app\\\\app\" -Recurse | Where-Object { !$_.PSIsContainer } | Select-Object -ExpandProperty FullName)",
+      "Bash(npx expo *)"
+    ]
+  }
+}

@@ -18,7 +18,12 @@ export default function AppointedPersonLayout() {
       <Stack.Screen name="crane-logs/open" options={{ title: 'Open Log' }} />
       <Stack.Screen name="crane-schedule" options={{ title: 'Crane Schedule' }} />
       <Stack.Screen name="daily-briefing" options={{ title: 'Daily Briefing' }} />
-      <Stack.Screen name="toolbox-talk" options={{ title: 'Toolbox Talk' }} />
+      <Stack.Screen name="toolbox-talk" options={{ title: 'Toolbox Talks' }} />
+      <Stack.Screen name="toolbox-talk/library" options={{ title: 'Talk Library' }} />
+      <Stack.Screen name="toolbox-talk/new" options={{ title: 'New Toolbox Talk' }} />
+      <Stack.Screen name="toolbox-talk/[id]" options={{ title: 'Toolbox Talk' }} />
+      <Stack.Screen name="toolbox-talk/sign" options={{ title: 'Sign Talk', presentation: 'modal' }} />
+      <Stack.Screen name="toolbox-talk/status" options={{ title: 'Sign-off Status' }} />
       <Stack.Screen name="loler-register" options={{ title: 'LOLER Register' }} />
       <Stack.Screen name="supervisor-checks" options={{ title: 'Supervisor Checks' }} />
       <Stack.Screen name="operator-checks" options={{ title: 'Operator Checks' }} />

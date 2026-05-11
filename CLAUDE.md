@@ -230,7 +230,7 @@ Visible sections on the dashboard:
   - Supervisor Checks
   - Operator Checks
 
-> **Note:** Crane Logs and Crane Schedule are the first screens to be built. The remaining screens are placeholders for now — create the navigation and screen shells but leave them empty.
+> **Note:** Crane Logs and Toolbox Talk are fully built. Crane Schedule, Daily Briefing, LOLER Register, Supervisor Checks, and Operator Checks are placeholders — navigation and screen shells exist but no logic is implemented.
 
 ---
 
@@ -306,11 +306,273 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 
 ---
 
-*More sections to follow: Crane Schedule, Daily Briefing, Toolbox Talk, LOLER Register, Supervisor Checks, Operator Checks.*
+*More sections to follow: Crane Schedule, Daily Briefing, LOLER Register, Supervisor Checks, Operator Checks.*
 
 ---
 
-## 8. Current Build Status
+## 8. Toolbox Talk
+
+A Toolbox Talk is a short, informal safety briefing held with site operatives before work begins. This feature manages the full lifecycle: creating and distributing a talk, tracking who has read it, collecting drawn signatures, and generating a permanent signed-off PDF record.
+
+---
+
+### 8.1 Data Model
+
+Four tables support this feature. All are defined in `supabase/toolbox_talk_schema.sql`.
+
+#### toolbox_talk_library
+Company-level reusable templates. An `appointed_person` or `company_admin` builds up a library of standard talks so they can be reused across sessions without re-entering the content.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `company_id` | UUID | FK → companies |
+| `title` | TEXT | Required |
+| `content_type` | enum | `text` or `pdf` |
+| `body` | TEXT | Populated when `content_type = 'text'`; NULL otherwise |
+| `pdf_url` | TEXT | Storage path when `content_type = 'pdf'`; NULL otherwise |
+| `created_by` | UUID | FK → profiles |
+| `is_archived` | BOOLEAN | Soft-delete |
+| `created_at` / `updated_at` | TIMESTAMPTZ | Standard timestamps |
+
+Constraint: exactly one of `body` or `pdf_url` must be non-null — enforced by a CHECK constraint.
+
+#### toolbox_talks
+Site-level talk instances. Each time an `appointed_person` or `crane_supervisor` runs a toolbox talk, a row is created here. It may be copied from the library or created ad hoc.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `site_id` | UUID | FK → sites |
+| `library_id` | UUID | FK → toolbox_talk_library (nullable — NULL if created manually) |
+| `title` | TEXT | Required |
+| `content_type` | enum | `text` or `pdf` |
+| `body` | TEXT | Text content; NULL for PDF talks |
+| `pdf_url` | TEXT | Original PDF Storage path; NULL for text talks |
+| `sign_off_pdf_url` | TEXT | Combined sign-off PDF path — set after sign-off is generated |
+| `created_by` | UUID | FK → profiles |
+| `is_archived` | BOOLEAN | Set to `true` when sign-off PDF is generated |
+| `archived_at` | TIMESTAMPTZ | Timestamp of archival |
+| `created_at` / `updated_at` | TIMESTAMPTZ | Standard timestamps |
+
+#### toolbox_talk_reads
+Records that a specific user has reached the bottom of a talk. One row per user per talk — enforced by a UNIQUE constraint on `(talk_id, user_id)`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `talk_id` | UUID | FK → toolbox_talks |
+| `user_id` | UUID | FK → profiles |
+| `read_at` | TIMESTAMPTZ | Automatically set on insert |
+
+#### toolbox_talk_signatures
+Stores a drawn signature for a specific user on a specific talk. One row per user per talk — enforced by a UNIQUE constraint on `(talk_id, user_id)`. Immutable once inserted.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `talk_id` | UUID | FK → toolbox_talks |
+| `user_id` | UUID | FK → profiles |
+| `full_name` | TEXT | Captured at sign time from the user's profile |
+| `role` | user_role | Captured at sign time |
+| `company_name` | TEXT | Main company name for all roles except `subcontractor_admin`, who shows their subcontractor company name |
+| `signature_url` | TEXT | Storage path to the signature PNG (`toolbox-talk-signatures` bucket) |
+| `signed_at` | TIMESTAMPTZ | Automatically set on insert |
+
+#### Schema change: profiles.subcontractor_id
+A nullable `subcontractor_id UUID` column is added to `profiles` to link `subcontractor_admin` users to their subcontractor company. This is the only way to resolve the correct company name at sign time.
+
+---
+
+### 8.2 Storage Buckets
+
+| Bucket | Contents | Path format |
+|---|---|---|
+| `toolbox-talk-signatures` | Signature PNG images | `{site_id}/{talk_id}/{user_id}.png` |
+| `toolbox-talk-pdfs` | Library PDFs, site talk PDFs, and generated sign-off PDFs | `library/{company_id}/{id}.pdf` · `talks/{site_id}/{id}.pdf` · `signoffs/{site_id}/{talk_id}_signoff.pdf` |
+
+Both buckets are private. Signed URLs are generated client-side via Supabase Storage for any user read.
+
+---
+
+### 8.3 RLS Summary
+
+| Table | Scope | Who can read | Who can write |
+|---|---|---|---|
+| `toolbox_talk_library` | `company_id` | All roles in that company | `appointed_person`, `company_admin`, `main_admin` |
+| `toolbox_talks` | `site_id` | All roles on that site | `appointed_person`, `crane_supervisor` |
+| `toolbox_talk_reads` | `talk_id` (site-scoped) | AP + supervisor see all; others see own | Any site role — own record only |
+| `toolbox_talk_signatures` | `talk_id` (site-scoped) | AP + supervisor see all; others see own | Any site role — own record only |
+
+---
+
+### 8.4 Screens
+
+All screens live under `app/(appointed-person)/toolbox-talk/` and are registered in the parent `_layout.tsx` Stack.
+
+---
+
+#### Talk List Screen — `toolbox-talk.tsx`
+The entry point, accessed from the dashboard.
+
+- Two tabs: **Active** and **Archive**
+- **Active tab:** lists all non-archived talks for the site. Each card shows: title, content type badge (Text / PDF), creator name, date created, read count, signed count
+- **Archive tab:** lists archived talks (those with a generated sign-off PDF). Same card layout
+- **+ New Toolbox Talk** button (visible to `appointed_person` and `crane_supervisor` only) → navigates to `toolbox-talk/new`
+- **Library** button → navigates to `toolbox-talk/library`
+- Tap any card → navigates to `toolbox-talk/[id]`
+
+---
+
+#### Library Screen — `toolbox-talk/library.tsx`
+Company-wide template library. Accessible from the Talk List screen.
+
+- Lists all non-archived library talks for the company
+- Each card shows: title, content type badge, creator name, date
+- **+ Add to Library** button → opens a modal form:
+  - Title (required)
+  - Content type: Text or PDF (toggle)
+  - If Text: multi-line text input for the full talk content
+  - If PDF: text input for the Storage path (user uploads the PDF to Supabase Storage separately, then pastes the path)
+- **Preview** action per card:
+  - Text talks → opens an inline text preview modal
+  - PDF talks → generates a signed URL and opens via `Linking.openURL` in the system browser
+- **Archive** action per card → soft-deletes from the library; confirmation alert required
+
+---
+
+#### New Talk Screen — `toolbox-talk/new.tsx`
+Two-option form for creating a site-level talk.
+
+**Option A — From Library:**
+- Radio list of all non-archived company library talks
+- On submit: creates a `toolbox_talks` row copying title, content_type, body, pdf_url from the selected library item; sets `library_id` to link back
+
+**Option B — Create Manually:**
+- Title input
+- Content type toggle: Text or PDF
+- If Text: multi-line text input
+- If PDF: Storage path input
+
+On submit → inserts the `toolbox_talks` row, navigates to `toolbox-talk/[id]` via `router.replace`.
+
+---
+
+#### Talk Detail Screen — `toolbox-talk/[id].tsx`
+The main reading and action screen.
+
+**Content display:**
+- Text talks: full body text rendered in a `ScrollView`
+- PDF talks: "View PDF" button that opens the file via a signed URL in the system browser; also shows a "Mark as Read" button since scroll-to-bottom cannot be tracked inside an external viewer
+
+**Scroll-to-bottom gate:**
+- For text talks, the `onScroll` event fires continuously. When `layoutMeasurement.height + contentOffset.y >= contentSize.height - 40` the user is deemed to have reached the bottom
+- On reaching the bottom: inserts a `toolbox_talk_reads` row (once — guarded by the unique constraint and local state); sets `hasScrolledToBottom = true`
+- If the user already has a read record (loaded on mount), `hasScrolledToBottom` is pre-set to `true`
+
+**Sign button logic:**
+- Hidden (replaced by locked placeholder) until `hasScrolledToBottom` is true
+- Once unlocked: **Sign this Talk** button → navigates to `toolbox-talk/sign?talk_id={id}`
+- After the user returns from signing, the screen re-fetches (via `useFocusEffect`) and replaces the button with a **Signed ✓** badge showing the timestamp
+
+**Buttons visible to `appointed_person` and `crane_supervisor` only:**
+- **View Status** → navigates to `toolbox-talk/status?talk_id={id}`
+- **Generate Sign-Off Page** → confirmation alert, then calls the `generate-signoff` Edge Function; on success shows a confirmation and re-fetches (the talk will now be archived)
+
+**Archived talks:**
+- All action buttons are hidden
+- If `sign_off_pdf_url` is set: **View Sign-Off PDF** button opens the combined PDF via signed URL
+
+---
+
+#### Signing Screen — `toolbox-talk/sign.tsx`
+Presented as a modal (Stack `presentation: 'modal'`).
+
+**Pre-filled read-only fields (populated from the user's profile on mount):**
+- Full name
+- Role (human-readable label)
+- Company — logic:
+  - `subcontractor_admin`: fetches their linked subcontractor's name via `profiles.subcontractor_id` → `subcontractors.name`
+  - All other roles: fetches their company's name via `profiles.company_id` → `companies.name`
+
+**Drawn signature canvas:**
+- Rendered via `react-native-signature-canvas` (WebView-based HTML canvas)
+- **Clear** button resets the canvas
+- **Confirm Signature** button is disabled until the canvas has received input
+
+**On confirm:**
+1. Reads the signature as a base64 PNG data URI from the canvas
+2. Decodes and uploads the PNG to the `toolbox-talk-signatures` Storage bucket at `{site_id}/{talk_id}/{user_id}.png`
+3. Inserts a `toolbox_talk_signatures` row with full_name, role, company_name, signature_url, and signed_at
+4. Handles the unique constraint violation gracefully (already signed → Alert + navigate back)
+5. On success: Alert confirmation, then `router.back()`
+
+---
+
+#### Live Status Screen — `toolbox-talk/status.tsx`
+Accessible to `appointed_person` and `crane_supervisor` only.
+
+- Displays a table of all non-archived operatives on the site
+- Columns: **Name**, **Role**, **Read** (timestamp or "Not yet"), **Signed** (timestamp or "Not yet")
+- Summary bar at the bottom: operative count, read count, signed count
+- **Live updates** via a Supabase Realtime subscription on `toolbox_talk_reads` and `toolbox_talk_signatures` filtered to `talk_id = {id}` — new rows appear instantly without a manual refresh
+
+---
+
+### 8.5 Sign-Off Generation
+
+#### Edge Function — `supabase/functions/generate-signoff/index.ts`
+
+Accepts a POST request. Two call modes:
+
+**From the app** — body `{ talk_id: "..." }`:
+- Processes that single talk immediately
+- Used when the AP or supervisor taps "Generate Sign-Off Page"
+
+**From pg_cron** — empty body `{}`:
+- Fetches all active talks (`is_archived = false`, `sign_off_pdf_url IS NULL`) that have at least one signature
+- Processes each one in sequence
+
+**Processing steps for each talk:**
+1. Fetch the `toolbox_talks` row and its linked `sites` row (for site name)
+2. Fetch all `toolbox_talk_signatures` rows for that talk, ordered by `signed_at`
+3. Build a sign-off PDF page using `pdf-lib` (imported via `npm:pdf-lib@^1` in Deno) containing:
+   - Header: "TOOLBOX TALK SIGN-OFF SHEET", talk title, site name, date generated
+   - A table of signatories: name, role, company, timestamp, and embedded signature PNG
+   - Automatic pagination if the signatory list exceeds one page
+4. If the talk is PDF-type and has an original `pdf_url`: download the original PDF and append the sign-off page to it as a combined document
+5. Upload the final PDF to `toolbox-talk-pdfs` at `signoffs/{site_id}/{talk_id}_signoff.pdf` (upsert)
+6. Update `toolbox_talks`: set `sign_off_pdf_url`, `is_archived = true`, `archived_at = NOW()`
+
+#### pg_cron Scheduled Job
+
+Defined in `supabase/toolbox_talk_schema.sql`. Requires the `pg_cron` and `pg_net` extensions enabled in the Supabase Dashboard.
+
+```sql
+SELECT cron.schedule(
+  'daily-toolbox-talk-signoff',
+  '0 0 * * *',   -- 00:00 UTC every day
+  $$ SELECT net.http_post(...) $$
+);
+```
+
+Replace `<project-ref>` and `<service-role-key>` with real values before running. The service role key must be stored securely — never commit it to version control.
+
+---
+
+### 8.6 Invariants — Never Break These
+
+- **No permanent deletion.** Only soft-archive via `is_archived = true`.
+- **One read record per user per talk.** Enforced by `UNIQUE (talk_id, user_id)` on `toolbox_talk_reads`. The UI also guards with local state.
+- **One signature record per user per talk.** Enforced by `UNIQUE (talk_id, user_id)` on `toolbox_talk_signatures`. The unique constraint violation is caught and handled gracefully.
+- **Sign button is gated behind scroll-to-bottom.** Never show it before `hasScrolledToBottom = true`. PDF talks use a manual "Mark as Read" button since scroll cannot be tracked in an external viewer.
+- **subcontractor_admin company field must show their subcontractor company name**, not the main site company. Requires `profiles.subcontractor_id` to be set when the user is created.
+- **Signatures are immutable.** No UPDATE or DELETE policy exists on `toolbox_talk_signatures` for any role.
+- **Sign-off generation archives the talk.** Once `sign_off_pdf_url` is set and `is_archived = true`, the talk is permanently read-only.
+
+---
+
+## 9. Current Build Status
 
 ### Built & Working
 
@@ -326,7 +588,7 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 | **Crane Logs screen** | Open log, edit log, close log, log list with filters, log detail view |
 | **Supabase schema** | Tables for companies, sites, users, cranes, subcontractors, crane_logs with RLS policies |
 | **Edge Function — user creation** | Creates Supabase Auth user and inserts profile row in a single server-side call |
-| **WatermelonDB setup** | Schema defined, models created, database initialised in app |
+| **Toolbox Talk feature** | Full end-to-end: library, talk list (Active/Archive tabs), new talk, talk detail with scroll-to-bottom gate, signing modal with drawn signature canvas, live status screen with Realtime, generate-signoff Edge Function, daily pg_cron job |
 
 ### Pending / Not Yet Built
 
@@ -334,8 +596,7 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 |---|---|
 | **Crane Schedule** | Screen shell only — no logic implemented |
 | **Daily Briefing** | Screen shell only — no logic implemented |
-| **Toolbox Talk** | Screen shell only — no logic implemented |
 | **LOLER Register** | Screen shell only — no logic implemented |
 | **Supervisor Checks** | Screen shell only — no logic implemented |
 | **Operator Checks** | Screen shell only — no logic implemented |
-| **Full offline sync testing** | WatermelonDB ↔ Supabase sync wired up but end-to-end offline/reconnect scenarios not fully tested |
+| **WatermelonDB offline sync** | Package not yet installed; all screens use direct Supabase queries |
