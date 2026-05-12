@@ -158,6 +158,11 @@ CREATE POLICY "toolbox_talk_library: appointed_person full access on own company
   USING     (auth_role() = 'appointed_person' AND company_id = auth_company_id())
   WITH CHECK (auth_role() = 'appointed_person' AND company_id = auth_company_id());
 
+-- crane_supervisor can add library items for their company (required for upload cascade)
+CREATE POLICY "toolbox_talk_library: crane_supervisor insert on own company"
+  ON toolbox_talk_library FOR INSERT TO authenticated
+  WITH CHECK (auth_role() = 'crane_supervisor' AND company_id = auth_company_id());
+
 -- Site roles can read the library to choose talks
 CREATE POLICY "toolbox_talk_library: site roles read own company"
   ON toolbox_talk_library FOR SELECT TO authenticated
@@ -353,3 +358,37 @@ SELECT cron.schedule(
     )
   $$
 );
+
+
+-- ==============================================================
+-- MIGRATION 2: docx support and content_text column
+-- ==============================================================
+-- Run each statement individually (not in a transaction) because
+-- ALTER TYPE ... ADD VALUE cannot execute inside a transaction.
+-- ==============================================================
+
+-- 1. Add docx variant to the content type enum
+ALTER TYPE toolbox_talk_content_type ADD VALUE IF NOT EXISTS 'docx';
+
+-- 2. Replace library CHECK constraint to allow docx
+--    (docx stores its file path in pdf_url, same as pdf)
+ALTER TABLE toolbox_talk_library
+  DROP CONSTRAINT chk_library_content;
+ALTER TABLE toolbox_talk_library
+  ADD CONSTRAINT chk_library_content CHECK (
+    (content_type = 'text'               AND body    IS NOT NULL AND pdf_url IS NULL)
+    OR (content_type IN ('pdf', 'docx')  AND pdf_url IS NOT NULL AND body    IS NULL)
+  );
+
+-- 3. Replace toolbox_talks CHECK constraint to allow docx
+ALTER TABLE toolbox_talks
+  DROP CONSTRAINT chk_talk_content;
+ALTER TABLE toolbox_talks
+  ADD CONSTRAINT chk_talk_content CHECK (
+    (content_type = 'text'               AND body    IS NOT NULL AND pdf_url IS NULL)
+    OR (content_type IN ('pdf', 'docx')  AND pdf_url IS NOT NULL AND body    IS NULL)
+  );
+
+-- 4. Add content_text for extracted docx plain text (populated by extract-docx-text Edge Function)
+ALTER TABLE toolbox_talks
+  ADD COLUMN IF NOT EXISTS content_text TEXT;

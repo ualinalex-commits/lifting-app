@@ -4,18 +4,19 @@ import {
   StyleSheet, Alert, ActivityIndicator, ScrollView,
   KeyboardAvoidingView, Platform, Modal,
 } from 'react-native'
-import { useFocusEffect } from 'expo-router'
+import { useRouter, useFocusEffect } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { EmptyState } from '@/components/empty-state'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
-import { Linking } from 'react-native'
+
+type ContentType = 'text' | 'pdf' | 'docx'
 
 interface LibraryTalk {
   id: string
   title: string
-  content_type: 'text' | 'pdf'
+  content_type: ContentType
   body: string | null
   pdf_url: string | null
   is_archived: boolean
@@ -28,17 +29,17 @@ function formatDate(iso: string) {
 }
 
 export default function ToolboxTalkLibrary() {
+  const router = useRouter()
   const { profile } = useAuth()
   const [talks, setTalks] = useState<LibraryTalk[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [showModal, setShowModal] = useState(false)
+  const [creatingId, setCreatingId] = useState<string | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
   const [previewTalk, setPreviewTalk] = useState<LibraryTalk | null>(null)
 
-  // Form state
+  // Add text talk form state
   const [title, setTitle] = useState('')
-  const [contentType, setContentType] = useState<'text' | 'pdf'>('text')
   const [body, setBody] = useState('')
-  const [pdfUrl, setPdfUrl] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const fetchTalks = useCallback(async () => {
@@ -61,41 +62,49 @@ export default function ToolboxTalkLibrary() {
 
   function resetForm() {
     setTitle('')
-    setContentType('text')
     setBody('')
-    setPdfUrl('')
   }
 
-  async function handleSubmit() {
-    if (!title.trim()) {
-      Alert.alert('Required', 'Please enter a title.')
+  async function handleUseTalk(libraryTalk: LibraryTalk) {
+    if (!profile?.site_id) {
+      Alert.alert('Error', 'Your account is not linked to a site.')
       return
     }
-    if (contentType === 'text' && !body.trim()) {
-      Alert.alert('Required', 'Please enter the talk content.')
-      return
-    }
-    if (contentType === 'pdf' && !pdfUrl.trim()) {
-      Alert.alert('Required', 'Please enter the PDF URL.')
-      return
-    }
+    setCreatingId(libraryTalk.id)
+    const { data, error } = await supabase
+      .from('toolbox_talks')
+      .insert({
+        site_id: profile.site_id,
+        library_id: libraryTalk.id,
+        title: libraryTalk.title,
+        content_type: libraryTalk.content_type,
+        body: libraryTalk.body,
+        pdf_url: libraryTalk.pdf_url,
+        created_by: profile.id,
+      })
+      .select('id')
+      .single()
+    setCreatingId(null)
+    if (error) { Alert.alert('Error', error.message); return }
+    router.replace(`/(appointed-person)/toolbox-talk/${data.id}` as any)
+  }
+
+  async function handleSubmitTextTalk() {
+    if (!title.trim()) { Alert.alert('Required', 'Please enter a title.'); return }
+    if (!body.trim()) { Alert.alert('Required', 'Please enter the talk content.'); return }
 
     setIsSubmitting(true)
     const { error } = await supabase.from('toolbox_talk_library').insert({
       company_id: profile!.company_id,
       title: title.trim(),
-      content_type: contentType,
-      body: contentType === 'text' ? body.trim() : null,
-      pdf_url: contentType === 'pdf' ? pdfUrl.trim() : null,
+      content_type: 'text' as const,
+      body: body.trim(),
+      pdf_url: null,
       created_by: profile!.id,
     })
     setIsSubmitting(false)
-
-    if (error) {
-      Alert.alert('Error', error.message)
-      return
-    }
-    setShowModal(false)
+    if (error) { Alert.alert('Error', error.message); return }
+    setShowAddModal(false)
     resetForm()
     fetchTalks()
   }
@@ -103,7 +112,7 @@ export default function ToolboxTalkLibrary() {
   async function handleArchive(talk: LibraryTalk) {
     Alert.alert(
       'Archive Library Talk',
-      `Archive "${talk.title}" from the library? It will no longer appear when creating new talks.`,
+      `Archive "${talk.title}" from the library? It will no longer appear for new talks.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -122,17 +131,16 @@ export default function ToolboxTalkLibrary() {
     )
   }
 
-  function handlePreview(talk: LibraryTalk) {
-    if (talk.content_type === 'pdf' && talk.pdf_url) {
-      supabase.storage
-        .from('toolbox-talk-pdfs')
-        .createSignedUrl(talk.pdf_url, 3600)
-        .then(({ data }) => {
-          if (data?.signedUrl) Linking.openURL(data.signedUrl)
-        })
-      return
-    }
-    setPreviewTalk(talk)
+  function badgeStyle(ct: ContentType) {
+    if (ct === 'pdf') return styles.typeBadgePdf
+    if (ct === 'docx') return styles.typeBadgeDocx
+    return styles.typeBadgeTxt
+  }
+
+  function badgeLabel(ct: ContentType) {
+    if (ct === 'pdf') return 'PDF'
+    if (ct === 'docx') return 'DOCX'
+    return 'Text'
   }
 
   return (
@@ -140,10 +148,10 @@ export default function ToolboxTalkLibrary() {
       <View style={styles.toolbar}>
         <TouchableOpacity
           style={styles.addBtn}
-          onPress={() => setShowModal(true)}
+          onPress={() => setShowAddModal(true)}
           activeOpacity={0.8}
         >
-          <Text style={styles.addBtnText}>+ Add to Library</Text>
+          <Text style={styles.addBtnText}>+ Add Text Talk</Text>
         </TouchableOpacity>
       </View>
 
@@ -157,34 +165,40 @@ export default function ToolboxTalkLibrary() {
           ListEmptyComponent={
             <EmptyState
               title="Library is empty"
-              message="Add reusable toolbox talk templates here for your company."
+              message="Upload a file from the Toolbox Talk screen, or add a text talk using the button above."
               icon="📚"
             />
           }
           renderItem={({ item }) => (
             <View style={styles.card}>
-              <TouchableOpacity onPress={() => handlePreview(item)} activeOpacity={0.8}>
-                <View style={styles.cardTop}>
-                  <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
-                  <View style={[
-                    styles.typeBadge,
-                    item.content_type === 'pdf' ? styles.typeBadgePdf : styles.typeBadgeTxt,
-                  ]}>
-                    <Text style={styles.typeBadgeLabel}>
-                      {item.content_type === 'pdf' ? 'PDF' : 'Text'}
-                    </Text>
-                  </View>
+              <View style={styles.cardTop}>
+                <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+                <View style={[styles.typeBadge, badgeStyle(item.content_type)]}>
+                  <Text style={styles.typeBadgeLabel}>{badgeLabel(item.content_type)}</Text>
                 </View>
-                <Text style={styles.cardMeta}>
-                  {item.creator?.full_name ?? '—'} · {formatDate(item.created_at)}
-                </Text>
-              </TouchableOpacity>
+              </View>
+              <Text style={styles.cardMeta}>
+                {item.creator?.full_name ?? '—'} · {formatDate(item.created_at)}
+              </Text>
               <View style={styles.cardActions}>
-                <TouchableOpacity onPress={() => handlePreview(item)} activeOpacity={0.8}>
-                  <Text style={styles.actionPreview}>Preview</Text>
+                <TouchableOpacity
+                  style={[styles.useBtn, creatingId === item.id && styles.useBtnDisabled]}
+                  onPress={() => handleUseTalk(item)}
+                  disabled={creatingId !== null}
+                  activeOpacity={0.8}
+                >
+                  {creatingId === item.id
+                    ? <ActivityIndicator color={Colors.textInverse} size="small" />
+                    : <Text style={styles.useBtnText}>Use This Talk</Text>
+                  }
                 </TouchableOpacity>
+                {item.content_type === 'text' && (
+                  <TouchableOpacity onPress={() => setPreviewTalk(item)} activeOpacity={0.8}>
+                    <Text style={styles.actionSecondary}>Preview</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity onPress={() => handleArchive(item)} activeOpacity={0.8}>
-                  <Text style={styles.actionArchive}>Archive</Text>
+                  <Text style={styles.actionDanger}>Archive</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -192,18 +206,12 @@ export default function ToolboxTalkLibrary() {
         />
       )}
 
-      {/* Add to Library modal */}
-      <Modal visible={showModal} animationType="slide" presentationStyle="pageSheet">
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={{ flex: 1 }}
-        >
+      {/* Add Text Talk modal */}
+      <Modal visible={showAddModal} animationType="slide" presentationStyle="pageSheet">
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={modal.header}>
-            <Text style={modal.headerTitle}>Add to Library</Text>
-            <TouchableOpacity
-              onPress={() => { setShowModal(false); resetForm() }}
-              activeOpacity={0.8}
-            >
+            <Text style={modal.headerTitle}>Add Text Talk</Text>
+            <TouchableOpacity onPress={() => { setShowAddModal(false); resetForm() }} activeOpacity={0.8}>
               <Text style={modal.cancelBtn}>Cancel</Text>
             </TouchableOpacity>
           </View>
@@ -218,59 +226,22 @@ export default function ToolboxTalkLibrary() {
                 placeholderTextColor={Colors.textMuted}
               />
             </View>
-
             <View style={modal.field}>
-              <Text style={modal.label}>Content Type *</Text>
-              <View style={modal.typeRow}>
-                {(['text', 'pdf'] as const).map((t) => (
-                  <TouchableOpacity
-                    key={t}
-                    style={[modal.typeBtn, contentType === t && modal.typeBtnActive]}
-                    onPress={() => setContentType(t)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[modal.typeBtnText, contentType === t && modal.typeBtnTextActive]}>
-                      {t === 'text' ? 'Text' : 'PDF'}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              <Text style={modal.label}>Content *</Text>
+              <TextInput
+                style={modal.textArea}
+                value={body}
+                onChangeText={setBody}
+                placeholder="Enter the full text of the toolbox talk..."
+                placeholderTextColor={Colors.textMuted}
+                multiline
+                numberOfLines={10}
+                textAlignVertical="top"
+              />
             </View>
-
-            {contentType === 'text' ? (
-              <View style={modal.field}>
-                <Text style={modal.label}>Content *</Text>
-                <TextInput
-                  style={modal.textArea}
-                  value={body}
-                  onChangeText={setBody}
-                  placeholder="Enter the full text of the toolbox talk..."
-                  placeholderTextColor={Colors.textMuted}
-                  multiline
-                  numberOfLines={8}
-                  textAlignVertical="top"
-                />
-              </View>
-            ) : (
-              <View style={modal.field}>
-                <Text style={modal.label}>PDF Storage Path *</Text>
-                <TextInput
-                  style={modal.input}
-                  value={pdfUrl}
-                  onChangeText={setPdfUrl}
-                  placeholder="library/company-id/filename.pdf"
-                  placeholderTextColor={Colors.textMuted}
-                  autoCapitalize="none"
-                />
-                <Text style={modal.hint}>
-                  Upload the PDF to Supabase Storage bucket "toolbox-talk-pdfs" and paste the path here.
-                </Text>
-              </View>
-            )}
-
             <TouchableOpacity
               style={[modal.submitBtn, isSubmitting && modal.submitBtnDisabled]}
-              onPress={handleSubmit}
+              onPress={handleSubmitTextTalk}
               disabled={isSubmitting}
               activeOpacity={0.8}
             >
@@ -302,12 +273,9 @@ export default function ToolboxTalkLibrary() {
 }
 
 const styles = StyleSheet.create({
-  toolbar: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.md,
-  },
+  toolbar: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.md },
   addBtn: {
-    backgroundColor: Colors.accent,
+    backgroundColor: Colors.primary,
     borderRadius: BorderRadius.md,
     paddingVertical: Spacing.sm,
     alignItems: 'center',
@@ -330,24 +298,33 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   cardTitle: { flex: 1, fontSize: FontSize.base, fontWeight: '700', color: Colors.text },
-  typeBadge: {
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-  },
+  typeBadge: { paddingHorizontal: Spacing.sm, paddingVertical: 2, borderRadius: BorderRadius.full },
   typeBadgePdf: { backgroundColor: Colors.info + '20' },
+  typeBadgeDocx: { backgroundColor: Colors.purple + '20' },
   typeBadgeTxt: { backgroundColor: Colors.success + '20' },
   typeBadgeLabel: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.textSecondary },
   cardMeta: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: Spacing.sm },
   cardActions: {
     flexDirection: 'row',
-    gap: Spacing.md,
+    alignItems: 'center',
+    gap: Spacing.sm,
     paddingTop: Spacing.sm,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
   },
-  actionPreview: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.primary },
-  actionArchive: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.danger },
+  useBtn: {
+    flex: 1,
+    backgroundColor: Colors.accent,
+    borderRadius: BorderRadius.sm,
+    paddingVertical: Spacing.xs,
+    alignItems: 'center',
+    minHeight: 32,
+    justifyContent: 'center',
+  },
+  useBtnDisabled: { opacity: 0.5 },
+  useBtnText: { color: Colors.textInverse, fontWeight: '700', fontSize: FontSize.sm },
+  actionSecondary: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.primary },
+  actionDanger: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.danger },
 })
 
 const modal = StyleSheet.create({
@@ -364,12 +341,7 @@ const modal = StyleSheet.create({
   cancelBtn: { fontSize: FontSize.base, color: Colors.primary, fontWeight: '600' },
   scroll: { padding: Spacing.md, paddingBottom: Spacing.xxl },
   field: { marginBottom: Spacing.md },
-  label: {
-    fontSize: FontSize.sm,
-    fontWeight: '600',
-    color: Colors.text,
-    marginBottom: Spacing.xs,
-  },
+  label: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text, marginBottom: Spacing.xs },
   input: {
     backgroundColor: Colors.background,
     borderWidth: 1.5,
@@ -388,27 +360,9 @@ const modal = StyleSheet.create({
     padding: Spacing.sm,
     fontSize: FontSize.base,
     color: Colors.text,
-    minHeight: 160,
+    minHeight: 200,
     textAlignVertical: 'top',
   },
-  hint: {
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    marginTop: Spacing.xs,
-    lineHeight: 16,
-  },
-  typeRow: { flexDirection: 'row', gap: Spacing.sm },
-  typeBtn: {
-    flex: 1,
-    paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.sm,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    alignItems: 'center',
-  },
-  typeBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primary + '10' },
-  typeBtnText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary },
-  typeBtnTextActive: { color: Colors.primary },
   submitBtn: {
     backgroundColor: Colors.accent,
     borderRadius: BorderRadius.md,

@@ -22,6 +22,7 @@ export default function AppointedPersonLayout() {
       <Stack.Screen name="toolbox-talk/library" options={{ title: 'Talk Library' }} />
       <Stack.Screen name="toolbox-talk/new" options={{ title: 'New Toolbox Talk' }} />
       <Stack.Screen name="toolbox-talk/[id]" options={{ title: 'Toolbox Talk' }} />
+      <Stack.Screen name="toolbox-talk/archive" options={{ title: 'Archive' }} />
       <Stack.Screen name="toolbox-talk/sign" options={{ title: 'Sign Talk', presentation: 'modal' }} />
       <Stack.Screen name="toolbox-talk/status" options={{ title: 'Sign-off Status' }} />
       <Stack.Screen name="loler-register" options={{ title: 'LOLER Register' }} />
