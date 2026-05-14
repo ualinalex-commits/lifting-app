@@ -67,10 +67,27 @@ async function uploadFileToStorage(
     uploadData = await res.blob()
   }
 
-  const { error } = await supabase.storage
+  console.log('UPLOAD ASSET:', {
+    uri: asset.uri?.substring(0, 100),
+    mimeType,
+    hasFile: !!(asset as any).file,
+    platform: Platform.OS,
+    uploadDataType: uploadData?.constructor?.name,
+    uploadDataSize: uploadData instanceof ArrayBuffer
+      ? uploadData.byteLength
+      : (uploadData as Blob)?.size,
+  })
+
+  const { error, data } = await supabase.storage
     .from('toolbox-talk-pdfs')
     .upload(path, uploadData, { contentType: mimeType, upsert: false })
-  if (error) throw new Error(error.message)
+
+  if (error) {
+    console.error('STORAGE UPLOAD ERROR:', JSON.stringify(error))
+    throw new Error(`Storage upload failed: ${error.message} (${JSON.stringify(error)})`)
+  }
+
+  console.log('STORAGE UPLOAD SUCCESS:', data)
   return path
 }
 
@@ -173,7 +190,7 @@ export default function ToolboxTalkHome() {
           'application/pdf',
           'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         ],
-        copyToCacheDirectory: true,
+        copyToCacheDirectory: false,
       })
       if (result.canceled) return
 
@@ -226,7 +243,8 @@ export default function ToolboxTalkHome() {
       fetchActiveTalk()
     } catch (err: any) {
       setIsUploading(false)
-      Alert.alert('Upload Error', err?.message ?? 'Failed to upload file.')
+      console.error('UPLOAD FAILED AT STEP:', err)
+      Alert.alert('Upload Error', JSON.stringify(err?.message ?? err))
     }
   }
 

@@ -1,8 +1,9 @@
 import { useState, useCallback } from 'react'
 import {
-  View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, Linking,
+  View, Text, FlatList, TouchableOpacity, StyleSheet,
+  ActivityIndicator, Linking,
 } from 'react-native'
-import { useRouter, useFocusEffect } from 'expo-router'
+import { useFocusEffect } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { EmptyState } from '@/components/empty-state'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
@@ -12,19 +13,44 @@ import { useAuth } from '@/lib/auth'
 interface ArchivedTalk {
   id: string
   title: string
-  content_type: 'text' | 'pdf' | 'docx'
+  content_type: 'pdf' | 'docx' | 'text'
   sign_off_pdf_url: string | null
   archived_at: string | null
   created_at: string
   creator: { full_name: string } | null
+  sig_count: number
+}
+
+interface ArchivedTalkRaw {
+  id: string
+  title: string
+  content_type: 'pdf' | 'docx' | 'text'
+  sign_off_pdf_url: string | null
+  archived_at: string | null
+  created_at: string
+  creator: { full_name: string } | null
+  toolbox_talk_signatures: { id: string }[]
 }
 
 function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  return new Date(iso).toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric',
+  })
+}
+
+function badgeStyle(ct: string) {
+  if (ct === 'pdf') return styles.typeBadgePdf
+  if (ct === 'docx') return styles.typeBadgeDocx
+  return styles.typeBadgeText
+}
+
+function badgeLabel(ct: string) {
+  if (ct === 'pdf') return 'PDF'
+  if (ct === 'docx') return 'DOCX'
+  return 'Text'
 }
 
 export default function ToolboxTalkArchiveScreen() {
-  const router = useRouter()
   const { profile } = useAuth()
   const [talks, setTalks] = useState<ArchivedTalk[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -37,13 +63,26 @@ export default function ToolboxTalkArchiveScreen() {
         .from('toolbox_talks')
         .select(`
           id, title, content_type, sign_off_pdf_url, archived_at, created_at,
-          creator:profiles!created_by(full_name)
+          creator:profiles!created_by(full_name),
+          toolbox_talk_signatures(id)
         `)
         .eq('site_id', profile.site_id)
-        .eq('is_archived', true)
+        .eq('status', 'archived')
         .order('archived_at', { ascending: false })
         .then(({ data }) => {
-          setTalks((data as ArchivedTalk[]) ?? [])
+          const raw = (data as unknown as ArchivedTalkRaw[]) ?? []
+          setTalks(
+            raw.map((t) => ({
+              id: t.id,
+              title: t.title,
+              content_type: t.content_type,
+              sign_off_pdf_url: t.sign_off_pdf_url,
+              archived_at: t.archived_at,
+              created_at: t.created_at,
+              creator: t.creator,
+              sig_count: t.toolbox_talk_signatures?.length ?? 0,
+            }))
+          )
           setIsLoading(false)
         })
     }, [profile?.site_id])
@@ -55,18 +94,6 @@ export default function ToolboxTalkArchiveScreen() {
       .from('toolbox-talk-pdfs')
       .createSignedUrl(talk.sign_off_pdf_url, 3600)
     if (data?.signedUrl) Linking.openURL(data.signedUrl)
-  }
-
-  function badgeStyle(ct: string) {
-    if (ct === 'pdf') return styles.typeBadgePdf
-    if (ct === 'docx') return styles.typeBadgeDocx
-    return styles.typeBadgeText
-  }
-
-  function badgeLabel(ct: string) {
-    if (ct === 'pdf') return 'PDF'
-    if (ct === 'docx') return 'DOCX'
-    return 'Text'
   }
 
   return (
@@ -88,11 +115,7 @@ export default function ToolboxTalkArchiveScreen() {
             />
           }
           renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.card}
-              onPress={() => router.push(`/(appointed-person)/toolbox-talk/${item.id}` as any)}
-              activeOpacity={0.8}
-            >
+            <View style={styles.card}>
               <View style={styles.cardTop}>
                 <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
                 <View style={[styles.typeBadge, badgeStyle(item.content_type)]}>
@@ -100,20 +123,21 @@ export default function ToolboxTalkArchiveScreen() {
                 </View>
               </View>
               <Text style={styles.cardMeta}>
-                {item.creator?.full_name ?? '—'} · Archived {formatDate(item.archived_at ?? item.created_at)}
+                Archived {formatDate(item.archived_at ?? item.created_at)} · {item.sig_count} {item.sig_count === 1 ? 'signature' : 'signatures'}
               </Text>
+              <Text style={styles.cardCreator}>{item.creator?.full_name ?? '—'}</Text>
               {item.sign_off_pdf_url ? (
                 <TouchableOpacity
-                  style={styles.pdfLinkRow}
+                  style={styles.pdfBtn}
                   onPress={() => handleViewSignOff(item)}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.pdfLinkText}>View Sign-Off PDF →</Text>
+                  <Text style={styles.pdfBtnText}>View Sign-Off PDF →</Text>
                 </TouchableOpacity>
               ) : (
                 <Text style={styles.noPdfText}>No sign-off PDF generated</Text>
               )}
-            </TouchableOpacity>
+            </View>
           )}
         />
       )}
@@ -144,8 +168,9 @@ const styles = StyleSheet.create({
   typeBadgeDocx: { backgroundColor: Colors.purple + '20' },
   typeBadgeText: { backgroundColor: Colors.success + '20' },
   typeBadgeLabel: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.textSecondary },
-  cardMeta: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: Spacing.sm },
-  pdfLinkRow: { alignSelf: 'flex-start' },
-  pdfLinkText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
+  cardMeta: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: 2 },
+  cardCreator: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: Spacing.sm },
+  pdfBtn: { alignSelf: 'flex-start' },
+  pdfBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
   noPdfText: { fontSize: FontSize.xs, color: Colors.textMuted },
 })
