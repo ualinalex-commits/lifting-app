@@ -13,6 +13,7 @@ export default function RootLayout() {
         <Stack.Screen name="(company-admin)" />
         <Stack.Screen name="(appointed-person)" />
         <Stack.Screen name="(operative)" />
+        <Stack.Screen name="(mewp)" />
       </Stack>
       <StatusBar style="auto" />
     </AuthProvider>

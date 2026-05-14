@@ -85,6 +85,7 @@ export default function Dashboard() {
             </TouchableOpacity>
           ))}
         </View>
+
       </ScrollView>
     </ScreenWrapper>
   )
