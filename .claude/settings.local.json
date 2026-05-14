@@ -5,12 +5,21 @@
       "Bash(npx expo *)",
       "Bash(Start-Sleep -Seconds 10)",
       "Bash(Get-Content \"C:\\\\Users\\\\alexg\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-alexg-OneDrive-Desktop-AppProjects-lifting-app\\\\fab5b1ea-c887-41d9-8550-4679e2332af8\\\\tasks\\\\b0nb17mzz.output\")",
-      "Bash(npm install *)",
-      "Bash(npx tsc *)",
-      "Bash(awk '$1 != 2 { print }')",
-      "Bash(grep -n \"^## 9\\\\. MEWP\\\\|^## 8\\\\.\\\\|^---$\" /Users/user/Desktop/AppProjects/lifting-app/CLAUDE.md)",
-      "Bash(head -n 310 /Users/user/Desktop/AppProjects/lifting-app/CLAUDE.md)",
-      "Bash(mv /tmp/claude_trimmed.md /Users/user/Desktop/AppProjects/lifting-app/CLAUDE.md)"
+      "Bash(Get-ChildItem *)",
+      "Bash(Remove-Item \"C:\\\\Users\\\\alexg\\\\OneDrive\\\\Desktop\\\\AppProjects\\\\lifting-app\\\\app\\\\\\(appointed-person\\)\\\\toolbox-talk.tsx\" -Force)",
+      "Bash(Remove-Item \"C:\\\\Users\\\\alexg\\\\OneDrive\\\\Desktop\\\\AppProjects\\\\lifting-app\\\\app\\\\\\(appointed-person\\)\\\\toolbox-talk\\\\[id].tsx\" -Force)",
+      "Bash(Remove-Item \"C:\\\\Users\\\\alexg\\\\OneDrive\\\\Desktop\\\\AppProjects\\\\lifting-app\\\\app\\\\\\(appointed-person\\)\\\\toolbox-talk\\\\new.tsx\" -Force -ErrorAction SilentlyContinue)",
+      "Bash(Remove-Item \"C:\\\\Users\\\\alexg\\\\OneDrive\\\\Desktop\\\\AppProjects\\\\lifting-app\\\\app\\\\\\(appointed-person\\)\\\\toolbox-talk\\\\status.tsx\" -Force -ErrorAction SilentlyContinue)",
+      "Bash(Write-Host \"Deleted old toolbox talk files\")",
+      "PowerShell(cd \"C:\\\\Users\\\\alexg\\\\OneDrive\\\\Desktop\\\\AppProjects\\\\lifting-app\"; npx tsc --noEmit 2>&1 | Where-Object { $_ -match \"toolbox-talk\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\alexg\\\\OneDrive\\\\Desktop\\\\AppProjects\\\\lifting-app\"; npx tsc --noEmit 2>&1 | Where-Object { $_ -match \"toolbox-talk\" } | ForEach-Object { Write-Host $_ })",
+      "PowerShell(supabase *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(git stash *)",
+      "Skill(supabase:supabase)"
     ]
   }
 }

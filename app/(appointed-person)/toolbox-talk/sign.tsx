@@ -11,10 +11,10 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
 
 const ROLE_LABELS: Record<string, string> = {
-  appointed_person:   'Appointed Person',
-  crane_supervisor:   'Crane Supervisor',
-  crane_operator:     'Crane Operator',
-  slinger_signaller:  'Slinger / Signaller',
+  appointed_person:    'Appointed Person',
+  crane_supervisor:    'Crane Supervisor',
+  crane_operator:      'Crane Operator',
+  slinger_signaller:   'Slinger / Signaller',
   subcontractor_admin: 'Subcontractor Admin',
 }
 
@@ -38,6 +38,24 @@ const row = StyleSheet.create({
   value: { flex: 1, fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
 })
 
+// Decode base64 to Uint8Array for Supabase Storage upload
+function decodeBase64(base64: string): Uint8Array {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const result: number[] = []
+  let i = 0
+  const b64 = base64.replace(/=/g, '')
+  while (i < b64.length) {
+    const enc1 = chars.indexOf(b64[i++])
+    const enc2 = chars.indexOf(b64[i++])
+    const enc3 = chars.indexOf(b64[i++])
+    const enc4 = chars.indexOf(b64[i++])
+    result.push((enc1 << 2) | (enc2 >> 4))
+    if (enc3 !== -1) result.push(((enc2 & 15) << 4) | (enc3 >> 2))
+    if (enc4 !== -1) result.push(((enc3 & 3) << 6) | enc4)
+  }
+  return new Uint8Array(result)
+}
+
 export default function SignTalk() {
   const { talk_id } = useLocalSearchParams<{ talk_id: string }>()
   const router = useRouter()
@@ -46,50 +64,48 @@ export default function SignTalk() {
   const sigRef = useRef<any>(null)
   const [hasSignature, setHasSignature] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [companyName, setCompanyName] = useState('')
+  const [company, setCompany] = useState('')
   const [isLoadingCompany, setIsLoadingCompany] = useState(true)
 
   useEffect(() => {
-    async function resolveCompanyName() {
+    async function resolveCompany() {
       if (!profile) return
 
       if (role === 'subcontractor_admin' && (profile as any).subcontractor_id) {
-        // Show the subcontractor's company name
         const { data } = await supabase
           .from('subcontractors')
           .select('name')
           .eq('id', (profile as any).subcontractor_id)
           .single()
-        setCompanyName(data?.name ?? 'Subcontractor')
+        setCompany(data?.name ?? 'Subcontractor')
       } else if (profile.company_id) {
-        // Show the main company name
         const { data } = await supabase
           .from('companies')
           .select('name')
           .eq('id', profile.company_id)
           .single()
-        setCompanyName(data?.name ?? 'Unknown Company')
+        setCompany(data?.name ?? 'Unknown Company')
       } else {
-        setCompanyName('Unknown')
+        setCompany('Unknown')
       }
       setIsLoadingCompany(false)
     }
-    resolveCompanyName()
+    resolveCompany()
   }, [profile, role])
 
   async function handleConfirm(signatureBase64: string) {
     if (!profile?.id || !talk_id) return
 
-    // signatureBase64 is a data URI: "data:image/png;base64,..."
     const base64Data = signatureBase64.replace(/^data:image\/png;base64,/, '')
-    const storagePath = `${profile.site_id}/${talk_id}/${profile.id}.png`
+    const storagePath = `${talk_id}/${profile.id}.png`
 
     setIsSubmitting(true)
 
-    // Upload signature image to Storage
+    // IMPORTANT: The "toolbox-talk-signatures" bucket must exist in Supabase Storage
+    // (private). Create it in the Supabase Dashboard → Storage → New bucket if absent.
     const { error: uploadError } = await supabase.storage
       .from('toolbox-talk-signatures')
-      .upload(storagePath, decode(base64Data), {
+      .upload(storagePath, decodeBase64(base64Data), {
         contentType: 'image/png',
         upsert: true,
       })
@@ -100,7 +116,6 @@ export default function SignTalk() {
       return
     }
 
-    // Insert signature record
     const { error: insertError } = await supabase
       .from('toolbox_talk_signatures')
       .insert({
@@ -108,8 +123,8 @@ export default function SignTalk() {
         user_id: profile.id,
         full_name: profile.full_name,
         role: role!,
-        company_name: companyName,
-        signature_url: storagePath,
+        company,
+        signature_image_url: storagePath,
       })
 
     setIsSubmitting(false)
@@ -127,14 +142,6 @@ export default function SignTalk() {
     Alert.alert('Signed', 'Your signature has been recorded.', [
       { text: 'OK', onPress: () => router.back() },
     ])
-  }
-
-  function handleEmpty() {
-    setHasSignature(false)
-  }
-
-  function handleBegin() {
-    setHasSignature(true)
   }
 
   function handleClear() {
@@ -168,7 +175,7 @@ export default function SignTalk() {
           <Text style={styles.sectionTitle}>Your Details</Text>
           <DetailRow label="Name" value={profile?.full_name ?? '—'} />
           <DetailRow label="Role" value={ROLE_LABELS[role ?? ''] ?? (role ?? '—')} />
-          <DetailRow label="Company" value={companyName} />
+          <DetailRow label="Company" value={company} />
         </View>
 
         {/* Signature canvas */}
@@ -179,8 +186,8 @@ export default function SignTalk() {
             <SignatureCanvas
               ref={sigRef}
               onOK={handleConfirm}
-              onEmpty={handleEmpty}
-              onBegin={handleBegin}
+              onEmpty={() => setHasSignature(false)}
+              onBegin={() => setHasSignature(true)}
               descriptionText=""
               clearText="Clear"
               confirmText="Confirm"
@@ -189,11 +196,7 @@ export default function SignTalk() {
             />
           </View>
           <View style={styles.canvasActions}>
-            <TouchableOpacity
-              style={styles.clearBtn}
-              onPress={handleClear}
-              activeOpacity={0.8}
-            >
+            <TouchableOpacity style={styles.clearBtn} onPress={handleClear} activeOpacity={0.8}>
               <Text style={styles.clearBtnText}>Clear</Text>
             </TouchableOpacity>
           </View>
@@ -206,10 +209,7 @@ export default function SignTalk() {
         </View>
 
         <TouchableOpacity
-          style={[
-            styles.confirmBtn,
-            (!hasSignature || isSubmitting) && styles.confirmBtnDisabled,
-          ]}
+          style={[styles.confirmBtn, (!hasSignature || isSubmitting) && styles.confirmBtnDisabled]}
           onPress={handleSubmitSignature}
           disabled={!hasSignature || isSubmitting}
           activeOpacity={0.8}
@@ -224,41 +224,11 @@ export default function SignTalk() {
   )
 }
 
-// Decode base64 string to Uint8Array for Supabase Storage upload
-function decode(base64: string): Uint8Array {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-  const result: number[] = []
-  let i = 0
-  const b64 = base64.replace(/=/g, '')
-  while (i < b64.length) {
-    const enc1 = chars.indexOf(b64[i++])
-    const enc2 = chars.indexOf(b64[i++])
-    const enc3 = chars.indexOf(b64[i++])
-    const enc4 = chars.indexOf(b64[i++])
-    result.push((enc1 << 2) | (enc2 >> 4))
-    if (enc3 !== -1) result.push(((enc2 & 15) << 4) | (enc3 >> 2))
-    if (enc4 !== -1) result.push(((enc3 & 3) << 6) | enc4)
-  }
-  return new Uint8Array(result)
-}
-
 const signatureWebStyle = `
-  .m-signature-pad {
-    box-shadow: none;
-    border: none;
-  }
-  .m-signature-pad--body {
-    border: none;
-  }
-  .m-signature-pad--footer {
-    display: none;
-  }
-  body, html {
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    padding: 0;
-  }
+  .m-signature-pad { box-shadow: none; border: none; }
+  .m-signature-pad--body { border: none; }
+  .m-signature-pad--footer { display: none; }
+  body, html { width: 100%; height: 100%; margin: 0; padding: 0; }
 `
 
 const styles = StyleSheet.create({
@@ -279,11 +249,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     marginBottom: Spacing.sm,
   },
-  canvasHint: {
-    fontSize: FontSize.sm,
-    color: Colors.textMuted,
-    marginBottom: Spacing.sm,
-  },
+  canvasHint: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.sm },
   canvasContainer: {
     height: 220,
     borderWidth: 1.5,

@@ -5,14 +5,15 @@
 // Called two ways:
 //   1. From the app (AP/supervisor): POST { talk_id: "..." }
 //      → processes that single talk immediately.
-//   2. From pg_cron (daily, service role): POST {}
-//      → processes all eligible talks (active, has ≥1 signature, no sign_off_pdf_url).
+//   2. From pg_cron (daily at 18:00 UTC): POST {}
+//      → processes all active talks that have ≥1 signature.
 //
 // For each eligible talk the function:
 //   1. Fetches the talk record and all signature records.
-//   2. Builds a sign-off page PDF with pdf-lib.
-//   3. Uploads the combined PDF to Supabase Storage.
-//   4. Updates the talk: sign_off_pdf_url, is_archived = true, archived_at = NOW().
+//   2. Builds a sign-off PDF page with pdf-lib.
+//   3. If the talk is PDF-type, appends the sign-off page to the original PDF.
+//   4. Uploads the combined PDF to Supabase Storage.
+//   5. Updates the talk: sign_off_pdf_url, status = 'archived', archived_at = NOW().
 
 import { createClient } from 'npm:@supabase/supabase-js@^2'
 import { PDFDocument, StandardFonts, rgb, PageSizes } from 'npm:pdf-lib@^1'
@@ -37,7 +38,7 @@ interface TalkRecord {
   content_type: string
   pdf_url: string | null
   sign_off_pdf_url: string | null
-  is_archived: boolean
+  status: string
   site: { name: string; company_id: string } | null
 }
 
@@ -46,19 +47,26 @@ interface SignatureRecord {
   user_id: string
   full_name: string
   role: string
-  company_name: string
-  signature_url: string
+  company: string
+  signature_image_url: string
   signed_at: string
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  appointed_person:    'Appointed Person',
+  crane_supervisor:    'Crane Supervisor',
+  crane_operator:      'Crane Operator',
+  slinger_signaller:   'Slinger/Signaller',
+  subcontractor_admin: 'Sub Admin',
 }
 
 async function processOneTalk(
   adminClient: ReturnType<typeof createClient>,
   talkId: string
 ): Promise<void> {
-  // Fetch talk
   const { data: talk, error: talkError } = await adminClient
     .from('toolbox_talks')
-    .select('id, site_id, title, content_type, pdf_url, sign_off_pdf_url, is_archived, site:sites(name, company_id)')
+    .select('id, site_id, title, content_type, pdf_url, sign_off_pdf_url, status, site:sites(name, company_id)')
     .eq('id', talkId)
     .single<TalkRecord>()
 
@@ -67,10 +75,9 @@ async function processOneTalk(
     return
   }
 
-  // Fetch all signatures for this talk
   const { data: signatures } = await adminClient
     .from('toolbox_talk_signatures')
-    .select('id, user_id, full_name, role, company_name, signature_url, signed_at')
+    .select('id, user_id, full_name, role, company, signature_image_url, signed_at')
     .eq('talk_id', talkId)
     .order('signed_at')
 
@@ -82,30 +89,36 @@ async function processOneTalk(
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
   const [pageW, pageH] = PageSizes.A4
-  const page = pdfDoc.addPage([pageW, pageH])
+  let page = pdfDoc.addPage([pageW, pageH])
 
   const margin = 50
   let y = pageH - margin
 
-  // Helper: draw text
-  const drawText = (text: string, x: number, yPos: number, size: number, isBold = false, color = rgb(0, 0, 0)) => {
-    page.drawText(text, { x, y: yPos, size, font: isBold ? boldFont : font, color })
+  function drawText(
+    targetPage: typeof page,
+    text: string,
+    x: number,
+    yPos: number,
+    size: number,
+    isBold = false,
+    color = rgb(0, 0, 0)
+  ) {
+    targetPage.drawText(text, { x, y: yPos, size, font: isBold ? boldFont : font, color })
   }
 
-  // Title
-  drawText('TOOLBOX TALK SIGN-OFF SHEET', margin, y, 16, true, rgb(0.06, 0.15, 0.26))
+  drawText(page, 'TOOLBOX TALK SIGN-OFF SHEET', margin, y, 16, true, rgb(0.06, 0.15, 0.26))
   y -= 30
 
-  // Talk details
-  drawText(`Talk: ${talk.title}`, margin, y, 12, true)
+  drawText(page, `Talk: ${talk.title}`, margin, y, 12, true)
   y -= 18
-  drawText(`Site: ${talk.site?.name ?? 'Unknown Site'}`, margin, y, 10)
+  drawText(page, `Site: ${talk.site?.name ?? 'Unknown Site'}`, margin, y, 10)
   y -= 16
-  const now = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
-  drawText(`Date Generated: ${now}`, margin, y, 10)
+  const dateStr = new Date().toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'long', year: 'numeric',
+  })
+  drawText(page, `Date Generated: ${dateStr}`, margin, y, 10)
   y -= 30
 
-  // Divider
   page.drawLine({
     start: { x: margin, y },
     end: { x: pageW - margin, y },
@@ -115,14 +128,18 @@ async function processOneTalk(
   y -= 20
 
   if (sigs.length === 0) {
-    drawText('No signatures recorded for this talk.', margin, y, 10, false, rgb(0.4, 0.4, 0.4))
+    drawText(page, 'No signatures recorded for this talk.', margin, y, 10, false, rgb(0.4, 0.4, 0.4))
   } else {
-    // Column headers
-    const colX = { name: margin, role: margin + 180, company: margin + 310, time: margin + 440 }
-    drawText('Name', colX.name, y, 9, true)
-    drawText('Role', colX.role, y, 9, true)
-    drawText('Company', colX.company, y, 9, true)
-    drawText('Signed At', colX.time, y, 9, true)
+    const colX = { name: margin, role: margin + 130, company: margin + 270, time: margin + 400 }
+
+    function drawRowHeaders(targetPage: typeof page, yPos: number) {
+      drawText(targetPage, 'Name', colX.name, yPos, 9, true)
+      drawText(targetPage, 'Role', colX.role, yPos, 9, true)
+      drawText(targetPage, 'Company', colX.company, yPos, 9, true)
+      drawText(targetPage, 'Signed At', colX.time, yPos, 9, true)
+    }
+
+    drawRowHeaders(page, y)
     y -= 14
 
     page.drawLine({
@@ -133,35 +150,23 @@ async function processOneTalk(
     })
     y -= 10
 
-    const ROLE_LABELS: Record<string, string> = {
-      appointed_person:    'Appointed Person',
-      crane_supervisor:    'Crane Supervisor',
-      crane_operator:      'Crane Operator',
-      slinger_signaller:   'Slinger/Signaller',
-      subcontractor_admin: 'Sub Admin',
-    }
-
     for (const sig of sigs) {
+      // New page if insufficient space
       if (y < margin + 80) {
-        // Add a new page if we're running out of space
-        const newPage = pdfDoc.addPage([pageW, pageH])
+        page = pdfDoc.addPage([pageW, pageH])
         y = pageH - margin
-        // Re-add column headers on new page
-        newPage.drawText('Name', { x: colX.name, y, size: 9, font: boldFont, color: rgb(0, 0, 0) })
-        newPage.drawText('Role', { x: colX.role, y, size: 9, font: boldFont, color: rgb(0, 0, 0) })
-        newPage.drawText('Company', { x: colX.company, y, size: 9, font: boldFont, color: rgb(0, 0, 0) })
-        newPage.drawText('Signed At', { x: colX.time, y, size: 9, font: boldFont, color: rgb(0, 0, 0) })
+        drawRowHeaders(page, y)
         y -= 20
       }
 
-      // Try to embed signature image
+      // Embed signature image
       try {
-        const { data: sigImageData } = await adminClient.storage
+        const { data: imgData } = await adminClient.storage
           .from('toolbox-talk-signatures')
-          .download(sig.signature_url)
+          .download(sig.signature_image_url)
 
-        if (sigImageData) {
-          const imgBytes = await sigImageData.arrayBuffer()
+        if (imgData) {
+          const imgBytes = await imgData.arrayBuffer()
           const sigImage = await pdfDoc.embedPng(new Uint8Array(imgBytes))
           const dims = sigImage.scale(0.15)
           page.drawImage(sigImage, {
@@ -172,17 +177,17 @@ async function processOneTalk(
           })
         }
       } catch {
-        // Signature image unavailable — draw placeholder
-        drawText('[signature]', colX.name, y - 10, 8, false, rgb(0.6, 0.6, 0.6))
+        drawText(page, '[signature]', colX.name, y - 10, 8, false, rgb(0.6, 0.6, 0.6))
       }
 
       const signedAt = new Date(sig.signed_at).toLocaleString('en-GB', {
-        day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+        day: 'numeric', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit',
       })
-      drawText(sig.full_name, colX.role, y, 9)
-      drawText(ROLE_LABELS[sig.role] ?? sig.role, colX.company, y, 9)
-      drawText(sig.company_name, colX.time, y, 9)
-      drawText(signedAt, colX.name, y - 40, 8, false, rgb(0.4, 0.4, 0.4))
+      drawText(page, sig.full_name, colX.role, y, 9)
+      drawText(page, ROLE_LABELS[sig.role] ?? sig.role, colX.company, y, 9)
+      drawText(page, sig.company, colX.time, y, 9)
+      drawText(page, signedAt, colX.name, y - 40, 8, false, rgb(0.4, 0.4, 0.4))
 
       y -= 60
       page.drawLine({
@@ -195,10 +200,10 @@ async function processOneTalk(
     }
   }
 
-  const pdfBytes = await pdfDoc.save()
+  const signOffBytes = await pdfDoc.save()
 
-  // If the original is a PDF, append sign-off as extra page
-  let finalPdfBytes = pdfBytes
+  // If original is a PDF, append sign-off as extra pages
+  let finalPdfBytes = signOffBytes
   if (talk.content_type === 'pdf' && talk.pdf_url) {
     try {
       const { data: origData } = await adminClient.storage
@@ -208,13 +213,13 @@ async function processOneTalk(
       if (origData) {
         const origBytes = await origData.arrayBuffer()
         const origDoc = await PDFDocument.load(new Uint8Array(origBytes))
-        const signOffDoc = await PDFDocument.load(pdfBytes)
+        const signOffDoc = await PDFDocument.load(signOffBytes)
         const copiedPages = await origDoc.copyPages(signOffDoc, signOffDoc.getPageIndices())
         for (const p of copiedPages) origDoc.addPage(p)
         finalPdfBytes = await origDoc.save()
       }
     } catch (e) {
-      console.warn('Could not merge original PDF, uploading sign-off page only:', e)
+      console.warn(`Could not merge original PDF for talk ${talkId}, uploading sign-off only:`, e)
     }
   }
 
@@ -229,20 +234,20 @@ async function processOneTalk(
     return
   }
 
-  // Update talk record
+  // Archive the talk
   const { error: updateError } = await adminClient
     .from('toolbox_talks')
     .update({
       sign_off_pdf_url: signOffPath,
-      is_archived: true,
+      status: 'archived',
       archived_at: new Date().toISOString(),
     })
     .eq('id', talkId)
 
   if (updateError) {
-    console.error(`Failed to update talk ${talkId}:`, updateError.message)
+    console.error(`Failed to archive talk ${talkId}:`, updateError.message)
   } else {
-    console.log(`Sign-off generated for talk ${talkId}`)
+    console.log(`Sign-off generated and talk archived: ${talkId}`)
   }
 }
 
@@ -260,42 +265,39 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   try {
     if (body.talk_id) {
-      // Called from app — process single talk
       await processOneTalk(adminClient, body.talk_id)
       return json({ ok: true })
     }
 
-    // Called from cron — process all eligible talks
+    // Cron mode: process all active talks that have at least one signature
     const { data: eligible, error } = await adminClient
       .from('toolbox_talks')
       .select('id')
-      .eq('is_archived', false)
+      .eq('status', 'active')
       .is('sign_off_pdf_url', null)
-      .gt('id', '00000000-0000-0000-0000-000000000000') // select all
 
     if (error) {
       console.error('Failed to fetch eligible talks:', error.message)
       return json({ error: error.message }, 500)
     }
 
-    // Only process talks that have at least one signature
     const talkIds = (eligible ?? []).map((t: { id: string }) => t.id)
-    const results: string[] = []
+    const processed: string[] = []
 
     for (const talkId of talkIds) {
       const { count } = await adminClient
         .from('toolbox_talk_signatures')
         .select('id', { count: 'exact', head: true })
         .eq('talk_id', talkId)
-        .then((r) => ({ count: r.count ?? 0 }))
+        .then((r: { count: number | null }) => ({ count: r.count ?? 0 }))
 
       if (count > 0) {
         await processOneTalk(adminClient, talkId)
-        results.push(talkId)
+        processed.push(talkId)
       }
     }
 
-    return json({ ok: true, processed: results.length, talk_ids: results })
+    return json({ ok: true, processed: processed.length, talk_ids: processed })
   } catch (err) {
     console.error('generate-signoff unhandled error:', err)
     return json({ error: 'Internal server error' }, 500)
