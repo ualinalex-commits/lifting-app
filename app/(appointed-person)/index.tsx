@@ -14,6 +14,7 @@ const QUICK_ACCESS = [
   { key: 'loler-register', label: 'LOLER Register', icon: '📑', description: 'Lifting equipment register', color: '#B45309', route: '/(appointed-person)/loler-register' },
   { key: 'supervisor-checks', label: 'Supervisor Checks', icon: '✅', description: 'Pre-lift supervisor inspections', color: '#0F766E', route: '/(appointed-person)/supervisor-checks' },
   { key: 'operator-checks', label: 'Operator Checks', icon: '🏗️', description: 'Operator pre-use checks', color: '#BE185D', route: '/(appointed-person)/operator-checks' },
+  { key: 'mewp', label: 'MEWP Inventory', icon: '🚜', description: 'Elevated work platform register', color: '#0369A1', route: '/(appointed-person)/mewp' },
 ]
 
 export default function Dashboard() {

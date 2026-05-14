@@ -38,6 +38,10 @@ export default function AppointedPersonLayout() {
       <Stack.Screen name="subcontractors/add" options={{ title: 'Add Subcontractor' }} />
       <Stack.Screen name="subcontractors/[id]" options={{ title: 'Edit Subcontractor' }} />
       <Stack.Screen name="subcontractors/archived" options={{ title: 'Archived Subcontractors' }} />
+      <Stack.Screen name="mewp/index" options={{ title: 'MEWP Inventory' }} />
+      <Stack.Screen name="mewp/add" options={{ title: 'Add MEWP' }} />
+      <Stack.Screen name="mewp/[id]/index" options={{ title: 'MEWP Detail' }} />
+      <Stack.Screen name="mewp/[id]/edit" options={{ title: 'Edit MEWP' }} />
     </Stack>
   )
 }
