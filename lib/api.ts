@@ -1,5 +1,25 @@
 import { supabase } from './supabase'
 
+export async function callExtractDocxText(
+  talkId: string,
+  fileUrl: string
+): Promise<{ error: string | null }> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    const { data, error } = await supabase.functions.invoke('extract-docx-text', {
+      body: { talk_id: talkId, file_url: fileUrl },
+      headers: session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` }
+        : undefined,
+    })
+    if (data?.error) return { error: data.error }
+    if (error) return { error: error.message }
+    return { error: null }
+  } catch (err: any) {
+    return { error: err?.message ?? 'Failed to extract document text' }
+  }
+}
+
 export async function callGenerateSignOff(
   talkId?: string
 ): Promise<{ error: string | null }> {

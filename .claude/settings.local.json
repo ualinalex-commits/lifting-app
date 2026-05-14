@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\alexg\\\\OneDrive\\\\Desktop\\\\AppProjects\\\\lifting-app\\\\app\" -Recurse | Where-Object { !$_.PSIsContainer } | Select-Object -ExpandProperty FullName)",
-      "Bash(npx expo *)"
+      "Bash(npx expo *)",
+      "Bash(Start-Sleep -Seconds 10)",
+      "Bash(Get-Content \"C:\\\\Users\\\\alexg\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-alexg-OneDrive-Desktop-AppProjects-lifting-app\\\\fab5b1ea-c887-41d9-8550-4679e2332af8\\\\tasks\\\\b0nb17mzz.output\")"
     ]
   }
 }

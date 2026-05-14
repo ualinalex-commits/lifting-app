@@ -4,17 +4,56 @@ import {
   StyleSheet, Alert, ActivityIndicator, KeyboardAvoidingView, Platform,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import * as DocumentPicker from 'expo-document-picker'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
+import { callExtractDocxText } from '@/lib/api'
+
+type FileContentType = 'pdf' | 'docx'
 
 interface LibraryTalk {
   id: string
   title: string
-  content_type: 'text' | 'pdf'
+  content_type: 'text' | 'pdf' | 'docx'
   body: string | null
   pdf_url: string | null
+}
+
+interface PickedFile {
+  uri: string
+  name: string
+  mimeType: string
+}
+
+function filenameToTitle(filename: string): string {
+  return filename.replace(/\.(pdf|docx)$/i, '').replace(/[-_]/g, ' ').trim()
+}
+
+function mimeToContentType(mimeType: string): FileContentType {
+  return mimeType === 'application/pdf' ? 'pdf' : 'docx'
+}
+
+function mimeToExt(mimeType: string): string {
+  return mimeType === 'application/pdf' ? 'pdf' : 'docx'
+}
+
+async function uploadFileToStorage(
+  uri: string,
+  mimeType: string,
+  companyId: string
+): Promise<string> {
+  const ext = mimeToExt(mimeType)
+  const uniqueId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+  const path = `library/${companyId}/${uniqueId}.${ext}`
+  const response = await fetch(uri)
+  const blob = await response.blob()
+  const { error } = await supabase.storage
+    .from('toolbox-talk-pdfs')
+    .upload(path, blob, { contentType: mimeType, upsert: false })
+  if (error) throw new Error(error.message)
+  return path
 }
 
 export default function NewToolboxTalk() {
@@ -28,9 +67,9 @@ export default function NewToolboxTalk() {
 
   // Manual form
   const [title, setTitle] = useState('')
-  const [contentType, setContentType] = useState<'text' | 'pdf'>('text')
+  const [manualType, setManualType] = useState<'text' | 'file'>('text')
   const [body, setBody] = useState('')
-  const [pdfUrl, setPdfUrl] = useState('')
+  const [pickedFile, setPickedFile] = useState<PickedFile | null>(null)
 
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -48,17 +87,33 @@ export default function NewToolboxTalk() {
       })
   }, [profile?.company_id])
 
-  async function handleSubmit() {
-    let payload: {
-      site_id: string
-      title: string
-      content_type: 'text' | 'pdf'
-      body: string | null
-      pdf_url: string | null
-      created_by: string
-      library_id?: string
+  async function handlePickFile() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/pdf',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ],
+        copyToCacheDirectory: true,
+      })
+      if (result.canceled) return
+      const asset = result.assets[0]
+      const file: PickedFile = {
+        uri: asset.uri,
+        name: asset.name,
+        mimeType: asset.mimeType ?? 'application/pdf',
+      }
+      setPickedFile(file)
+      // Pre-fill title from filename; keep any manually typed value only if no file was previously picked
+      if (!title.trim() || pickedFile !== null) {
+        setTitle(filenameToTitle(asset.name))
+      }
+    } catch {
+      Alert.alert('Error', 'Could not open the file picker.')
     }
+  }
 
+  async function handleSubmit() {
     if (mode === 'library') {
       if (!selectedLibraryId) {
         Alert.alert('Required', 'Please select a talk from the library.')
@@ -66,51 +121,138 @@ export default function NewToolboxTalk() {
       }
       const selected = libraryTalks.find((t) => t.id === selectedLibraryId)
       if (!selected) return
-      payload = {
-        site_id: profile!.site_id!,
-        title: selected.title,
-        content_type: selected.content_type,
-        body: selected.body,
-        pdf_url: selected.pdf_url,
-        created_by: profile!.id,
-        library_id: selected.id,
+
+      setIsSubmitting(true)
+      const { data, error } = await supabase
+        .from('toolbox_talks')
+        .insert({
+          site_id: profile!.site_id!,
+          title: selected.title,
+          content_type: selected.content_type,
+          body: selected.body,
+          pdf_url: selected.pdf_url,
+          created_by: profile!.id,
+          library_id: selected.id,
+        })
+        .select('id')
+        .single()
+
+      if (error) {
+        setIsSubmitting(false)
+        Alert.alert('Error', error.message)
+        return
       }
-    } else {
+
+      // For docx library items, extract text for this talk instance
+      if (selected.content_type === 'docx' && selected.pdf_url) {
+        await callExtractDocxText(data.id, selected.pdf_url)
+      }
+
+      setIsSubmitting(false)
+      router.replace(`/(appointed-person)/toolbox-talk/${data.id}` as any)
+      return
+    }
+
+    // Manual — text
+    if (manualType === 'text') {
       if (!title.trim()) {
         Alert.alert('Required', 'Please enter a title.')
         return
       }
-      if (contentType === 'text' && !body.trim()) {
+      if (!body.trim()) {
         Alert.alert('Required', 'Please enter the talk content.')
         return
       }
-      if (contentType === 'pdf' && !pdfUrl.trim()) {
-        Alert.alert('Required', 'Please enter the PDF path.')
-        return
-      }
-      payload = {
-        site_id: profile!.site_id!,
-        title: title.trim(),
-        content_type: contentType,
-        body: contentType === 'text' ? body.trim() : null,
-        pdf_url: contentType === 'pdf' ? pdfUrl.trim() : null,
-        created_by: profile!.id,
-      }
+      setIsSubmitting(true)
+      const { data, error } = await supabase
+        .from('toolbox_talks')
+        .insert({
+          site_id: profile!.site_id!,
+          title: title.trim(),
+          content_type: 'text' as const,
+          body: body.trim(),
+          pdf_url: null,
+          created_by: profile!.id,
+        })
+        .select('id')
+        .single()
+      setIsSubmitting(false)
+      if (error) { Alert.alert('Error', error.message); return }
+      router.replace(`/(appointed-person)/toolbox-talk/${data.id}` as any)
+      return
+    }
+
+    // Manual — file upload
+    if (!title.trim()) {
+      Alert.alert('Required', 'Please enter a title.')
+      return
+    }
+    if (!pickedFile) {
+      Alert.alert('Required', 'Please select a file to upload.')
+      return
     }
 
     setIsSubmitting(true)
-    const { data, error } = await supabase
-      .from('toolbox_talks')
-      .insert(payload)
-      .select('id')
-      .single()
-    setIsSubmitting(false)
+    try {
+      const filePath = await uploadFileToStorage(
+        pickedFile.uri,
+        pickedFile.mimeType,
+        profile!.company_id!
+      )
+      const fileContentType = mimeToContentType(pickedFile.mimeType)
 
-    if (error) {
-      Alert.alert('Error', error.message)
-      return
+      // Auto-add to library first
+      const { data: libraryData, error: libraryError } = await supabase
+        .from('toolbox_talk_library')
+        .insert({
+          company_id: profile!.company_id,
+          title: title.trim(),
+          content_type: fileContentType,
+          body: null,
+          pdf_url: filePath,
+          created_by: profile!.id,
+        })
+        .select('id')
+        .single()
+
+      if (libraryError) {
+        setIsSubmitting(false)
+        Alert.alert('Error', libraryError.message)
+        return
+      }
+
+      // Create site-level talk linked to the library entry
+      const { data: talkData, error: talkError } = await supabase
+        .from('toolbox_talks')
+        .insert({
+          site_id: profile!.site_id!,
+          title: title.trim(),
+          content_type: fileContentType,
+          body: null,
+          pdf_url: filePath,
+          library_id: libraryData.id,
+          created_by: profile!.id,
+        })
+        .select('id')
+        .single()
+
+      if (talkError) {
+        setIsSubmitting(false)
+        Alert.alert('Error', talkError.message)
+        return
+      }
+
+      // For docx, trigger server-side text extraction
+      if (fileContentType === 'docx') {
+        await callExtractDocxText(talkData.id, filePath)
+      }
+
+      setIsSubmitting(false)
+      router.replace(`/(appointed-person)/toolbox-talk/${talkData.id}` as any)
+    } catch (err: any) {
+      setIsSubmitting(false)
+      Alert.alert('Upload Error', err?.message ?? 'Failed to upload file.')
     }
-    router.replace(`/(appointed-person)/toolbox-talk/${data.id}` as any)
   }
 
   return (
@@ -166,7 +308,7 @@ export default function NewToolboxTalk() {
                           {t.title}
                         </Text>
                         <Text style={styles.optionSub}>
-                          {t.content_type === 'pdf' ? 'PDF' : 'Text'}
+                          {t.content_type === 'pdf' ? 'PDF' : t.content_type === 'docx' ? 'DOCX' : 'Text'}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -190,22 +332,22 @@ export default function NewToolboxTalk() {
               <View style={styles.card}>
                 <FormLabel label="Content Type" required />
                 <View style={styles.modeRow}>
-                  {(['text', 'pdf'] as const).map((t) => (
+                  {(['text', 'file'] as const).map((t) => (
                     <TouchableOpacity
                       key={t}
-                      style={[styles.modeBtn, contentType === t && styles.modeBtnActive]}
-                      onPress={() => setContentType(t)}
+                      style={[styles.modeBtn, manualType === t && styles.modeBtnActive]}
+                      onPress={() => setManualType(t)}
                       activeOpacity={0.8}
                     >
-                      <Text style={[styles.modeBtnText, contentType === t && styles.modeBtnTextActive]}>
-                        {t === 'text' ? 'Text' : 'PDF'}
+                      <Text style={[styles.modeBtnText, manualType === t && styles.modeBtnTextActive]}>
+                        {t === 'text' ? 'Text' : 'Upload File'}
                       </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
               </View>
 
-              {contentType === 'text' ? (
+              {manualType === 'text' ? (
                 <View style={styles.card}>
                   <FormLabel label="Content" required />
                   <TextInput
@@ -221,18 +363,25 @@ export default function NewToolboxTalk() {
                 </View>
               ) : (
                 <View style={styles.card}>
-                  <FormLabel label="PDF Storage Path" required />
-                  <TextInput
-                    style={styles.input}
-                    value={pdfUrl}
-                    onChangeText={setPdfUrl}
-                    placeholder="talks/site-id/filename.pdf"
-                    placeholderTextColor={Colors.textMuted}
-                    autoCapitalize="none"
-                  />
-                  <Text style={styles.hint}>
-                    Upload the PDF to Supabase Storage bucket "toolbox-talk-pdfs" first, then paste the path here.
-                  </Text>
+                  <FormLabel label="File" required />
+                  {pickedFile ? (
+                    <View style={styles.fileSelected}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.fileName} numberOfLines={1}>{pickedFile.name}</Text>
+                        <Text style={styles.fileType}>
+                          {mimeToContentType(pickedFile.mimeType).toUpperCase()} · Will be added to library
+                        </Text>
+                      </View>
+                      <TouchableOpacity onPress={handlePickFile} activeOpacity={0.8}>
+                        <Text style={styles.changeFile}>Change</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TouchableOpacity style={styles.pickFileBtn} onPress={handlePickFile} activeOpacity={0.8}>
+                      <Text style={styles.pickFileBtnText}>Pick PDF or Word File</Text>
+                    </TouchableOpacity>
+                  )}
+                  <Text style={styles.hint}>Supported: PDF (.pdf), Word (.docx)</Text>
                 </View>
               )}
             </>
@@ -341,6 +490,29 @@ const styles = StyleSheet.create({
     minHeight: 120,
     textAlignVertical: 'top',
   },
+  pickFileBtn: {
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderRadius: BorderRadius.sm,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    backgroundColor: Colors.primary + '08',
+  },
+  pickFileBtnText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.sm },
+  fileSelected: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.success + '10',
+    borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderWidth: 1.5,
+    borderColor: Colors.success + '40',
+    gap: Spacing.sm,
+  },
+  fileName: { fontSize: FontSize.sm, color: Colors.text, fontWeight: '600' },
+  fileType: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
+  changeFile: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
   hint: {
     fontSize: FontSize.xs,
     color: Colors.textMuted,
