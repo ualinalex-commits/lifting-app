@@ -86,15 +86,30 @@ export default function CraneLogDetail() {
           style: 'destructive',
           onPress: async () => {
             setIsClosing(true)
-            const { error } = await supabase
+            const now = new Date().toISOString()
+            console.log('[CloseLog] Sending update for log id:', id, 'end_time:', now)
+            const { data, error } = await supabase
               .from('crane_logs')
-              .update({ is_closed: true, end_time: new Date().toISOString() })
+              .update({ is_closed: true, end_time: now })
               .eq('id', id)
+              .select('id, is_closed, end_time')
+            console.log('[CloseLog] Response data:', JSON.stringify(data))
+            console.log('[CloseLog] Response error:', JSON.stringify(error))
             setIsClosing(false)
             if (error) {
-              Alert.alert('Error', 'Failed to close log. Please try again.')
+              console.error('[CloseLog] Supabase error full object:', error)
+              Alert.alert('Error closing log', `${error.message}\n\nCode: ${error.code ?? 'none'}`)
               return
             }
+            if (!data || data.length === 0) {
+              console.warn('[CloseLog] Update succeeded but 0 rows affected — likely an RLS policy is blocking UPDATE for this user role/site.')
+              Alert.alert(
+                'Permission error',
+                'The log could not be closed. You may not have permission to update this log.\n\nRun this in Supabase SQL editor to check:\nSELECT policyname, cmd FROM pg_policies WHERE tablename = \'crane_logs\';'
+              )
+              return
+            }
+            console.log('[CloseLog] Success — log closed:', data[0])
             await fetchLog()
           },
         },

@@ -20,7 +20,8 @@
       "Bash(git pull *)",
       "Bash(git stash *)",
       "Skill(supabase:supabase)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(npx supabase *)"
     ]
   }
 }
