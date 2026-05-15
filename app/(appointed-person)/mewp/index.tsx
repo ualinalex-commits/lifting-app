@@ -13,6 +13,8 @@ import { ScreenWrapper } from '@/components/screen-wrapper'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
+import * as Print from 'expo-print'
+import * as Sharing from 'expo-sharing'
 
 type MewpStatus = 'valid' | 'exp_soon' | 'no_cert'
 
@@ -261,66 +263,21 @@ export default function MewpInventory() {
 
   function closePreview() { setPreviewUrl(null); setPreviewLabel('') }
 
-  function handleArchive(mewp: Mewp) {
-    Alert.alert(
-      'Archive MEWP',
-      `Archive ${mewp.mewp_type} (${mewp.serial_number})?\n\nIt will be hidden from the active list but can be restored.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Archive', style: 'destructive',
-          onPress: async () => {
-            console.log('[MEWP Archive] mewp.id:', mewp.id, 'role:', profile?.role, 'site_id:', profile?.site_id)
-            const { data, error } = await supabase
-              .from('mewps')
-              .update({ is_archived: true })
-              .eq('id', mewp.id)
-              .select()
-            if (error) {
-              console.error('[MEWP Archive] Supabase error:', JSON.stringify(error))
-              Alert.alert('Archive Failed', `${error.message}\nCode: ${error.code}\nDetails: ${error.details ?? '—'}`)
-            } else if (!data || data.length === 0) {
-              console.warn('[MEWP Archive] Zero rows updated — RLS is likely blocking UPDATE on mewps. role:', profile?.role, 'site_id:', profile?.site_id)
-              Alert.alert('Archive Failed', 'No rows were updated. The RLS policy may not allow this role to UPDATE mewps — check Supabase policies for appointed_person.')
-            } else {
-              console.log('[MEWP Archive] Success, updated rows:', JSON.stringify(data))
-              fetchMewps()
-            }
-          },
-        },
-      ]
-    )
+  async function handleArchive(mewp: Mewp) {
+    const response = await supabase.from('mewps').update({ is_archived: true }).eq('id', mewp.id)
+    console.log('[Archive] data:', response.data, 'error:', response.error, 'status:', response.status)
+    if (!response.error) {
+      setMewps(prev => prev.filter(m => m.id !== mewp.id))
+    }
   }
 
-  function handleDelete(mewp: Mewp) {
-    Alert.alert(
-      'Delete MEWP',
-      `Permanently delete ${mewp.mewp_type} (${mewp.serial_number})?\n\nThis cannot be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete', style: 'destructive',
-          onPress: async () => {
-            console.log('[MEWP Delete] mewp.id:', mewp.id, 'role:', profile?.role, 'site_id:', profile?.site_id)
-            const { data, error } = await supabase
-              .from('mewps')
-              .delete()
-              .eq('id', mewp.id)
-              .select()
-            if (error) {
-              console.error('[MEWP Delete] Supabase error:', JSON.stringify(error))
-              Alert.alert('Delete Failed', `${error.message}\nCode: ${error.code}\nDetails: ${error.details ?? '—'}`)
-            } else if (!data || data.length === 0) {
-              console.warn('[MEWP Delete] Zero rows deleted — RLS is likely blocking DELETE on mewps. role:', profile?.role, 'site_id:', profile?.site_id)
-              Alert.alert('Delete Failed', 'No rows were deleted. The RLS policy may not allow this role to DELETE mewps — check Supabase policies for appointed_person.')
-            } else {
-              console.log('[MEWP Delete] Success, deleted rows:', JSON.stringify(data))
-              fetchMewps()
-            }
-          },
-        },
-      ]
-    )
+  async function handleDelete(mewp: Mewp) {
+    if (!confirm(`Delete ${mewp.mewp_type} (${mewp.serial_number})? This cannot be undone.`)) return
+    const response = await supabase.from('mewps').delete().eq('id', mewp.id)
+    console.log('[Delete] data:', response.data, 'error:', response.error, 'status:', response.status)
+    if (!response.error) {
+      setMewps(prev => prev.filter(m => m.id !== mewp.id))
+    }
   }
 
   async function handleRestore(mewp: Mewp) {
@@ -441,6 +398,112 @@ export default function MewpInventory() {
 
   function openArchivedModal() { fetchArchivedMewps(); setShowArchived(true) }
   function openArchivedSubsModal() { fetchArchivedSubs(); setShowArchivedSubs(true) }
+
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false)
+
+  async function handleGeneratePdf() {
+    setIsGeneratingPdf(true)
+    try {
+      const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
+
+      const tableRows = mewps.map((m, i) => {
+        const status = getMewpStatus(m.thorough_exam_expiry)
+        const statusLabel = status === 'valid' ? 'VALID' : status === 'exp_soon' ? 'EXP SOON' : 'NO CERT / EXPIRED'
+        const statusColor = status === 'valid' ? '#16A34A' : status === 'exp_soon' ? '#CA8A04' : '#DC2626'
+        return `
+          <tr>
+            <td>${i + 1}</td>
+            <td>${m.mewp_type}</td>
+            <td class="mono">${m.serial_number}</td>
+            <td>${m.subcontractor?.name ?? 'Site-owned'}</td>
+            <td>${formatDate(m.thorough_exam_expiry)}</td>
+            <td>${m.current_location ?? '—'}</td>
+            <td style="color:${statusColor};font-weight:700;">${statusLabel}</td>
+          </tr>`
+      }).join('')
+
+      const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; padding: 32px; color: #1F2937; font-size: 13px; }
+  h1 { font-size: 26px; font-weight: 800; margin-bottom: 4px; }
+  .meta { font-size: 12px; color: #6B7280; margin-bottom: 24px; }
+  .summary { display: flex; gap: 12px; margin-bottom: 24px; }
+  .summary-card { flex: 1; padding: 14px 16px; border-radius: 8px; text-align: center; }
+  .summary-count { font-size: 30px; font-weight: 800; line-height: 1; }
+  .summary-label { font-size: 11px; font-weight: 700; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+  th { background: #F9FAFB; padding: 9px 10px; border-bottom: 1.5px solid #E5E7EB; font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: #6B7280; text-align: left; font-weight: 700; }
+  td { padding: 8px 10px; border-bottom: 1px solid #F3F4F6; font-size: 12px; vertical-align: middle; }
+  tr:nth-child(even) td { background: #FAFBFC; }
+  .mono { font-family: monospace; }
+  .footer { border-top: 1.5px solid #E5E7EB; padding-top: 14px; }
+  .totals { display: flex; gap: 28px; font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  .legend { font-size: 11px; color: #6B7280; line-height: 1.9; }
+  .legend strong { color: #374151; }
+</style>
+</head>
+<body>
+  <h1>${siteName || 'MEWP Inventory'}</h1>
+  <div class="meta">Generated: ${dateStr}&nbsp;&nbsp;|&nbsp;&nbsp;Total Units: ${mewps.length}</div>
+
+  <div class="summary">
+    <div class="summary-card" style="background:#F0FDF4;">
+      <div class="summary-count" style="color:#16A34A;">${counts.valid}</div>
+      <div class="summary-label" style="color:#16A34A;">Valid</div>
+    </div>
+    <div class="summary-card" style="background:#FEFCE8;">
+      <div class="summary-count" style="color:#CA8A04;">${counts.exp_soon}</div>
+      <div class="summary-label" style="color:#CA8A04;">Exp Soon</div>
+    </div>
+    <div class="summary-card" style="background:#FEF2F2;">
+      <div class="summary-count" style="color:#DC2626;">${counts.no_cert}</div>
+      <div class="summary-label" style="color:#DC2626;">No Cert / Expired</div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>MEWP Type</th>
+        <th>Serial Number</th>
+        <th>Subcontractor</th>
+        <th>Thorough Exam Expiry</th>
+        <th>Location</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+
+  <div class="footer">
+    <div class="totals">
+      <span>Total: ${mewps.length}</span>
+      <span style="color:#16A34A;">Valid: ${counts.valid}</span>
+      <span style="color:#CA8A04;">Expiring Soon: ${counts.exp_soon}</span>
+      <span style="color:#DC2626;">Action Required: ${counts.no_cert}</span>
+    </div>
+    <div class="legend">
+      <strong>VALID</strong> = Thorough Exam current&nbsp;&nbsp;&nbsp;
+      <strong>EXP SOON</strong> = expires within 30 days&nbsp;&nbsp;&nbsp;
+      <strong>NO CERT / EXPIRED</strong> = immediate action required, unit must not be used
+    </div>
+  </div>
+</body>
+</html>`
+
+      const { uri } = await Print.printToFileAsync({ html })
+      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'MEWP Inventory Report' })
+    } catch (err: any) {
+      Alert.alert('PDF Error', err.message ?? 'Could not generate report.')
+    } finally {
+      setIsGeneratingPdf(false)
+    }
+  }
 
   const previewContentHeight = Math.min(windowHeight - 200, 548)
   const previewBoxWidth = Math.min(windowWidth - 32, 480)
@@ -649,6 +712,18 @@ export default function MewpInventory() {
             <TouchableOpacity style={styles.viewArchivedBtn} onPress={openArchivedModal} activeOpacity={0.8}>
               <MaterialIcons name="archive" size={16} color={Colors.textSecondary} />
               <Text style={styles.viewArchivedBtnText}>View Archived</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.pdfBtn, (isGeneratingPdf || mewps.length === 0) && { opacity: 0.5 }]}
+              onPress={handleGeneratePdf}
+              disabled={isGeneratingPdf || mewps.length === 0}
+              activeOpacity={0.8}
+            >
+              {isGeneratingPdf
+                ? <ActivityIndicator size="small" color="#7C3AED" />
+                : <MaterialIcons name="picture-as-pdf" size={16} color="#7C3AED" />
+              }
+              <Text style={styles.pdfBtnText}>{isGeneratingPdf ? 'Generating…' : 'PDF Report'}</Text>
             </TouchableOpacity>
           </View>
 
@@ -1147,6 +1222,18 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   viewArchivedBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
+  pdfBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: '#F5F3FF',
+  },
+  pdfBtnText: { fontSize: FontSize.sm, color: '#7C3AED', fontWeight: '600' },
 
   // Summary cards
   summaryRow: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.md, gap: Spacing.sm },
