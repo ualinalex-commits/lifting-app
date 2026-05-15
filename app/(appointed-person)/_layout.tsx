@@ -1,7 +1,10 @@
 import { Stack } from 'expo-router'
 import { Colors, FontSize } from '@/constants/theme'
+import { isMewpOnlyMode } from '@/lib/mewp-mode'
 
 export default function AppointedPersonLayout() {
+  const mewpOnly = isMewpOnlyMode()
+
   return (
     <Stack
       screenOptions={{
@@ -9,7 +12,9 @@ export default function AppointedPersonLayout() {
         headerTintColor: Colors.textInverse,
         headerTitleStyle: { fontWeight: '700', fontSize: FontSize.base },
         contentStyle: { backgroundColor: Colors.background },
-        animation: 'slide_from_right',
+        animation: mewpOnly ? 'none' : 'slide_from_right',
+        gestureEnabled: !mewpOnly,
+        headerBackVisible: !mewpOnly,
       }}
     >
       <Stack.Screen name="index" options={{ headerShown: false }} />
@@ -38,7 +43,11 @@ export default function AppointedPersonLayout() {
       <Stack.Screen name="subcontractors/add" options={{ title: 'Add Subcontractor' }} />
       <Stack.Screen name="subcontractors/[id]" options={{ title: 'Edit Subcontractor' }} />
       <Stack.Screen name="subcontractors/archived" options={{ title: 'Archived Subcontractors' }} />
-      <Stack.Screen name="mewp/index" options={{ title: 'MEWP Inventory' }} />
+      {/* mewp/index is always headerShown:false (custom nav bar) and never swipe-back-able */}
+      <Stack.Screen
+        name="mewp/index"
+        options={{ headerShown: false, gestureEnabled: false, headerBackVisible: false }}
+      />
       <Stack.Screen name="mewp/add" options={{ title: 'Add MEWP' }} />
       <Stack.Screen name="mewp/[id]/index" options={{ title: 'MEWP Detail' }} />
       <Stack.Screen name="mewp/[id]/edit" options={{ title: 'Edit MEWP' }} />

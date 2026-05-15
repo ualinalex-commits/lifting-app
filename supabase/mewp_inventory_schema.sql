@@ -83,7 +83,7 @@ CREATE POLICY "mewps_insert"
     )
   );
 
--- mewps: appointed_person and subcontractor_admin can UPDATE their site's MEWPs
+-- mewps: appointed_person, subcontractor_admin, and main_admin can UPDATE
 CREATE POLICY "mewps_update"
   ON mewps FOR UPDATE
   TO authenticated
@@ -91,16 +91,44 @@ CREATE POLICY "mewps_update"
     EXISTS (
       SELECT 1 FROM profiles
       WHERE profiles.id = auth.uid()
-        AND profiles.role IN ('appointed_person', 'subcontractor_admin')
-        AND profiles.site_id = mewps.site_id
+        AND (
+          profiles.role = 'main_admin'
+          OR (
+            profiles.role IN ('appointed_person', 'subcontractor_admin')
+            AND profiles.site_id = mewps.site_id
+          )
+        )
     )
   )
   WITH CHECK (
     EXISTS (
       SELECT 1 FROM profiles
       WHERE profiles.id = auth.uid()
-        AND profiles.role IN ('appointed_person', 'subcontractor_admin')
-        AND profiles.site_id = mewps.site_id
+        AND (
+          profiles.role = 'main_admin'
+          OR (
+            profiles.role IN ('appointed_person', 'subcontractor_admin')
+            AND profiles.site_id = mewps.site_id
+          )
+        )
+    )
+  );
+
+-- mewps: appointed_person, subcontractor_admin, and main_admin can DELETE
+CREATE POLICY "mewps_delete"
+  ON mewps FOR DELETE
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+        AND (
+          profiles.role = 'main_admin'
+          OR (
+            profiles.role IN ('appointed_person', 'subcontractor_admin')
+            AND profiles.site_id = mewps.site_id
+          )
+        )
     )
   );
 
