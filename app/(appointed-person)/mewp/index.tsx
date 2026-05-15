@@ -96,6 +96,7 @@ export default function MewpInventory() {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
 
   const isWeb = Platform.OS === 'web'
+  const isMobileLayout = windowWidth < 768
   const TABLE_MOB_TOTAL = Object.values(COL_MOB).reduce((a: number, b: number) => a + b, 0)
 
   // MEWP state
@@ -458,7 +459,7 @@ export default function MewpInventory() {
     const hasSticker = !!mewp.sticker_url
     const certIsPdf = hasCert && isPdf(mewp.thorough_exam_url!)
 
-    if (isWeb) {
+    if (!isMobileLayout) {
       return (
         <TouchableOpacity
           key={mewp.id}
@@ -542,50 +543,67 @@ export default function MewpInventory() {
       )
     }
 
+    // Mobile card — native or web viewport < 768px
     return (
       <TouchableOpacity
         key={mewp.id}
-        style={[styles.tableRow, i % 2 === 1 && styles.tableRowAlt]}
+        style={styles.mewpCard}
         onPress={() => router.push(`/(appointed-person)/mewp/${mewp.id}` as any)}
         activeOpacity={0.7}
       >
-        <TD width={COL_MOB.num}><Text style={styles.tdNum}>{page * PAGE_SIZE + i + 1}</Text></TD>
-        <TD width={COL_MOB.type}><Text style={styles.tdText} numberOfLines={1}>{mewp.mewp_type}</Text></TD>
-        <TD width={COL_MOB.serial}><Text style={styles.tdMono} numberOfLines={1}>{mewp.serial_number}</Text></TD>
-        <TD width={COL_MOB.sub}>
-          <Text style={styles.tdText} numberOfLines={1}>{mewp.subcontractor?.name ?? 'Site-owned'}</Text>
-        </TD>
-        <TD width={COL_MOB.expiry}><Text style={styles.tdText}>{formatDate(mewp.thorough_exam_expiry)}</Text></TD>
-        <TD width={COL_MOB.location}>
-          <Text style={styles.tdText} numberOfLines={1}>{mewp.current_location ?? '—'}</Text>
-        </TD>
-        <TD width={COL_MOB.status}>
+        <View style={styles.mewpCardHeader}>
+          <Text style={styles.mewpCardNum}>#{page * PAGE_SIZE + i + 1}</Text>
           <View style={[styles.statusPill, { backgroundColor: meta.bg, borderColor: meta.border }]}>
             <Text style={[styles.statusPillText, { color: meta.text }]}>{meta.label}</Text>
           </View>
-        </TD>
-        <TD width={COL_MOB.actions}>
-          <View style={styles.actionBtns}>
-            <TouchableOpacity style={styles.actionBtn} onPress={(e) => { e.stopPropagation?.(); openUploadSheet(mewp) }} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
-              <MaterialIcons name="upload-file" size={17} color={Colors.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={(e) => { e.stopPropagation?.(); router.push(`/(appointed-person)/mewp/${mewp.id}/edit` as any) }} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
-              <MaterialIcons name="edit" size={17} color={Colors.textSecondary} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={(e) => { e.stopPropagation?.(); hasCert && handlePreviewPress(mewp.thorough_exam_url!, 'Certificate') }} disabled={!hasCert} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
-              <MaterialCommunityIcons name="certificate" size={17} color={hasCert ? Colors.primary : Colors.textMuted} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={(e) => { e.stopPropagation?.(); hasSticker && handlePreviewPress(mewp.sticker_url!, 'Sticker') }} disabled={!hasSticker} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
-              <MaterialIcons name="photo" size={17} color={hasSticker ? Colors.textSecondary : Colors.textMuted} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={(e) => { e.stopPropagation?.(); handleArchive(mewp) }} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
-              <MaterialIcons name="archive" size={17} color={Colors.warning} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={(e) => { e.stopPropagation?.(); handleDelete(mewp) }} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
-              <MaterialIcons name="delete-outline" size={17} color={Colors.danger} />
-            </TouchableOpacity>
-          </View>
-        </TD>
+        </View>
+        <Text style={styles.mewpCardType}>{mewp.mewp_type}</Text>
+        <Text style={styles.mewpCardSerial}>{mewp.serial_number}</Text>
+        <View style={styles.mewpCardDivider} />
+        <View style={styles.mewpCardRow}>
+          <Text style={styles.mewpCardLabel}>Subcontractor</Text>
+          <Text style={styles.mewpCardValue} numberOfLines={1}>{mewp.subcontractor?.name ?? 'Site-owned'}</Text>
+        </View>
+        <View style={styles.mewpCardRow}>
+          <Text style={styles.mewpCardLabel}>Expiry</Text>
+          <Text style={styles.mewpCardValue}>{formatDate(mewp.thorough_exam_expiry)}</Text>
+        </View>
+        <View style={styles.mewpCardRow}>
+          <Text style={styles.mewpCardLabel}>Location</Text>
+          <Text style={styles.mewpCardValue} numberOfLines={1}>{mewp.current_location ?? '—'}</Text>
+        </View>
+        <View style={styles.mewpCardActions}>
+          <TouchableOpacity
+            style={styles.cardActionUpload}
+            onPress={(e) => { e.stopPropagation?.(); openUploadSheet(mewp) }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+          >
+            <MaterialIcons name="upload-file" size={14} color={Colors.primary} />
+            <Text style={styles.cardActionUploadText}>Upload</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.cardActionEdit}
+            onPress={(e) => { e.stopPropagation?.(); router.push(`/(appointed-person)/mewp/${mewp.id}/edit` as any) }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+          >
+            <MaterialIcons name="edit" size={14} color={Colors.textSecondary} />
+            <Text style={styles.cardActionEditText}>Edit</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.cardActionArchive}
+            onPress={(e) => { e.stopPropagation?.(); handleArchive(mewp) }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+          >
+            <Text style={styles.cardActionArchiveText}>Archive</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.cardActionDelete}
+            onPress={(e) => { e.stopPropagation?.(); handleDelete(mewp) }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+          >
+            <Text style={styles.cardActionDeleteText}>Delete</Text>
+          </TouchableOpacity>
+        </View>
       </TouchableOpacity>
     )
   }
@@ -668,10 +686,10 @@ export default function MewpInventory() {
             />
           </View>
 
-          {/* MEWP Table */}
+          {/* MEWP Table / Cards */}
           {isLoading ? (
             <ActivityIndicator style={{ marginTop: Spacing.xl }} color={Colors.accent} />
-          ) : isWeb ? (
+          ) : !isMobileLayout ? (
             <View style={styles.tableWebContainer}>
               <View style={[styles.table, styles.tableWebFull]}>
                 <View style={styles.tableHeader}>
@@ -698,29 +716,17 @@ export default function MewpInventory() {
               </View>
             </View>
           ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator>
-              <View style={styles.table}>
-                <View style={styles.tableHeader}>
-                  <TH width={COL_MOB.num}>#</TH>
-                  <TH width={COL_MOB.type}>Type</TH>
-                  <TH width={COL_MOB.serial}>Serial</TH>
-                  <TH width={COL_MOB.sub}>Subcontractor</TH>
-                  <TH width={COL_MOB.expiry}>Expiry</TH>
-                  <TH width={COL_MOB.location}>Location</TH>
-                  <TH width={COL_MOB.status}>Status</TH>
-                  <TH width={COL_MOB.actions}>Actions</TH>
+            <View style={styles.cardList}>
+              {displayed.length === 0 ? (
+                <View style={styles.emptyRow}>
+                  <Text style={styles.emptyRowText}>
+                    {filter !== 'all' || search ? 'No MEWPs match this filter.' : 'No MEWPs on this site yet.'}
+                  </Text>
                 </View>
-                {displayed.length === 0 ? (
-                  <View style={[styles.emptyRow, { width: TABLE_MOB_TOTAL }]}>
-                    <Text style={styles.emptyRowText}>
-                      {filter !== 'all' || search ? 'No MEWPs match this filter.' : 'No MEWPs on this site yet.'}
-                    </Text>
-                  </View>
-                ) : (
-                  displayed.map((mewp, i) => renderMewpRow(mewp, i))
-                )}
-              </View>
-            </ScrollView>
+              ) : (
+                displayed.map((mewp, i) => renderMewpRow(mewp, i))
+              )}
+            </View>
           )}
 
           {/* Pagination */}
@@ -1383,6 +1389,130 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary, borderRadius: BorderRadius.md, paddingVertical: Spacing.md, marginTop: Spacing.sm,
   },
   sheetUploadBtnText: { color: Colors.textInverse, fontWeight: '700', fontSize: FontSize.base },
+
+  // Mobile MEWP cards
+  cardList: {
+    paddingHorizontal: Spacing.md,
+    gap: Spacing.sm,
+  },
+  mewpCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    borderWidth: 0.5,
+    borderColor: Colors.border,
+    padding: Spacing.md,
+    ...Shadow.sm,
+  },
+  mewpCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  mewpCardNum: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    fontWeight: '600',
+  },
+  mewpCardType: {
+    fontSize: FontSize.base,
+    fontWeight: '700',
+    color: Colors.text,
+    marginBottom: 2,
+  },
+  mewpCardSerial: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    fontVariant: ['tabular-nums'],
+    marginBottom: Spacing.sm,
+  },
+  mewpCardDivider: {
+    height: 0.5,
+    backgroundColor: Colors.divider,
+    marginBottom: Spacing.sm,
+  },
+  mewpCardRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 3,
+  },
+  mewpCardLabel: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    fontWeight: '600',
+    flex: 1,
+  },
+  mewpCardValue: {
+    fontSize: FontSize.xs,
+    color: Colors.text,
+    flex: 2,
+    textAlign: 'right',
+  },
+  mewpCardActions: {
+    flexDirection: 'row',
+    gap: Spacing.xs,
+    marginTop: Spacing.md,
+    flexWrap: 'wrap' as any,
+  },
+  cardActionUpload: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: '#EFF6FF',
+  },
+  cardActionUploadText: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+  cardActionEdit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  cardActionEditText: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  cardActionArchive: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    backgroundColor: '#F3F4F6',
+  },
+  cardActionArchiveText: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  cardActionDelete: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    backgroundColor: '#FEF2F2',
+  },
+  cardActionDeleteText: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+    color: '#DC2626',
+  },
 
   // Archived modal
   archivedNavBar: {
