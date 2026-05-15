@@ -88,13 +88,14 @@ export default function CraneLogDetail() {
             setIsClosing(true)
             const now = new Date().toISOString()
             console.log('[CloseLog] Sending update for log id:', id, 'end_time:', now)
-            const { data, error } = await supabase
+            const { data, error, status, statusText } = await supabase
               .from('crane_logs')
               .update({ is_closed: true, end_time: now })
               .eq('id', id)
               .select('id, is_closed, end_time')
-            console.log('[CloseLog] Response data:', JSON.stringify(data))
-            console.log('[CloseLog] Response error:', JSON.stringify(error))
+            console.log('[CloseLog] Response — status:', status, 'statusText:', statusText)
+            console.log('[CloseLog] Response — data:', JSON.stringify(data))
+            console.log('[CloseLog] Response — error:', JSON.stringify(error))
             setIsClosing(false)
             if (error) {
               console.error('[CloseLog] Supabase error full object:', error)
