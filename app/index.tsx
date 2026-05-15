@@ -2,6 +2,7 @@ import { Redirect } from 'expo-router'
 import { View, ActivityIndicator, StyleSheet } from 'react-native'
 import { useAuth, OPERATIVE_ROLES } from '@/lib/auth'
 import { Colors } from '@/constants/theme'
+import { isMewpOnlyMode } from '@/lib/mewp-mode'
 
 export default function Index() {
   const { session, role, isLoading } = useAuth()
@@ -15,6 +16,8 @@ export default function Index() {
   }
 
   if (!session) return <Redirect href="/auth/sign-in" />
+
+  if (isMewpOnlyMode()) return <Redirect href="/(appointed-person)/mewp" />
 
   if (role === 'main_admin') return <Redirect href="/(main-admin)" />
   if (role === 'company_admin') return <Redirect href="/(company-admin)" />
