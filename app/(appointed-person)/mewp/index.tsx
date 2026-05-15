@@ -427,6 +427,7 @@ export default function MewpInventory() {
 <head>
 <meta charset="utf-8">
 <style>
+  @page { size: A4 landscape; margin: 10mm; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Arial, Helvetica, sans-serif; padding: 32px; color: #1F2937; font-size: 13px; }
   h1 { font-size: 26px; font-weight: 800; margin-bottom: 4px; }
@@ -496,8 +497,20 @@ export default function MewpInventory() {
 </body>
 </html>`
 
-      const { uri } = await Print.printToFileAsync({ html })
-      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'MEWP Inventory Report' })
+      if (Platform.OS === 'web') {
+        const blob = new Blob([html], { type: 'text/html' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'mewp-inventory.pdf'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else {
+        const { uri } = await Print.printToFileAsync({ html, base64: false })
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'MEWP Inventory Report' })
+      }
     } catch (err: any) {
       Alert.alert('PDF Error', err.message ?? 'Could not generate report.')
     } finally {
