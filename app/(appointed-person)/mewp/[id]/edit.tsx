@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
-  StyleSheet, Alert, ActivityIndicator, Platform,
+  StyleSheet, Alert, ActivityIndicator, Platform, useWindowDimensions,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import * as DocumentPicker from 'expo-document-picker'
@@ -46,6 +46,8 @@ export default function EditMewp() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const router = useRouter()
   const { profile } = useAuth()
+  const { width } = useWindowDimensions()
+  const isDesktop = Platform.OS === 'web' && width >= 768
 
   const [subcontractors, setSubcontractors] = useState<Subcontractor[]>([])
   const [isLoadingData, setIsLoadingData] = useState(true)
@@ -209,6 +211,7 @@ export default function EditMewp() {
   return (
     <ScreenWrapper edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <View style={isDesktop ? styles.formDesktop : styles.formMobile}>
 
         <View style={styles.card}>
           <FormLabel label="MEWP Type" required />
@@ -371,7 +374,7 @@ export default function EditMewp() {
             <Text style={styles.submitBtnText}>Save Changes</Text>
           )}
         </TouchableOpacity>
-
+        </View>
       </ScrollView>
     </ScreenWrapper>
   )
@@ -379,8 +382,17 @@ export default function EditMewp() {
 
 const styles = StyleSheet.create({
   scroll: {
-    padding: Spacing.md,
+    flexGrow: 1,
     paddingBottom: Spacing.xxl,
+  },
+  formMobile: {
+    padding: Spacing.md,
+    paddingBottom: 0,
+  },
+  formDesktop: {
+    width: '80%' as any,
+    alignSelf: 'center' as any,
+    paddingTop: Spacing.lg,
   },
   card: {
     backgroundColor: Colors.surface,

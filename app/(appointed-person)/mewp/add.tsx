@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
-  StyleSheet, Alert, ActivityIndicator, Platform,
+  StyleSheet, Alert, ActivityIndicator, Platform, useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import * as DocumentPicker from 'expo-document-picker'
@@ -45,6 +45,8 @@ function formatDateDisplay(str: string): string {
 export default function AddMewp() {
   const router = useRouter()
   const { profile } = useAuth()
+  const { width } = useWindowDimensions()
+  const isDesktop = Platform.OS === 'web' && width >= 768
 
   const [subcontractors, setSubcontractors] = useState<Subcontractor[]>([])
   const [isLoadingData, setIsLoadingData] = useState(true)
@@ -202,6 +204,7 @@ export default function AddMewp() {
   return (
     <ScreenWrapper edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <View style={isDesktop ? styles.formDesktop : styles.formMobile}>
 
         <View style={styles.card}>
           <FormLabel label="MEWP Type" required />
@@ -339,6 +342,7 @@ export default function AddMewp() {
             <Text style={styles.submitBtnText}>Add MEWP</Text>
           )}
         </TouchableOpacity>
+        </View>
       </ScrollView>
     </ScreenWrapper>
   )
@@ -346,8 +350,17 @@ export default function AddMewp() {
 
 const styles = StyleSheet.create({
   scroll: {
-    padding: Spacing.md,
+    flexGrow: 1,
     paddingBottom: Spacing.xxl,
+  },
+  formMobile: {
+    padding: Spacing.md,
+    paddingBottom: 0,
+  },
+  formDesktop: {
+    width: '80%' as any,
+    alignSelf: 'center' as any,
+    paddingTop: Spacing.lg,
   },
   card: {
     backgroundColor: Colors.surface,

@@ -709,8 +709,8 @@ export default function MewpInventory() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* 80% centered on web, full width on mobile */}
-        <View style={isWeb ? styles.centeredContent : styles.fullContent}>
+        {/* 80% centered on desktop web, full width on mobile */}
+        <View style={isWeb && !isMobileLayout ? styles.centeredContent : styles.fullContent}>
 
           {/* Toolbar */}
           <View style={styles.toolbar}>
@@ -1211,6 +1211,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap' as any,
     gap: Spacing.sm,
   },
   addBtn: {
