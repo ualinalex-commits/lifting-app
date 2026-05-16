@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Linking,
+  ActivityIndicator, Linking, Alert,
 } from 'react-native'
 import { useFocusEffect } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
@@ -15,6 +15,7 @@ interface ArchivedTalk {
   id: string
   title: string
   content_type: 'pdf' | 'docx' | 'text'
+  pdf_url: string | null
   sign_off_pdf_url: string | null
   archived_at: string | null
   created_at: string
@@ -26,6 +27,7 @@ interface ArchivedTalkRaw {
   id: string
   title: string
   content_type: 'pdf' | 'docx' | 'text'
+  pdf_url: string | null
   sign_off_pdf_url: string | null
   archived_at: string | null
   created_at: string
@@ -55,28 +57,36 @@ export default function ToolboxTalkArchiveScreen() {
   const { profile } = useAuth()
   const [talks, setTalks] = useState<ArchivedTalk[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [fetchError, setFetchError] = useState<string | null>(null)
 
   useFocusEffect(
     useCallback(() => {
       if (!profile?.site_id) return
       setIsLoading(true)
+      setFetchError(null)
       supabase
         .from('toolbox_talks')
         .select(`
-          id, title, content_type, sign_off_pdf_url, archived_at, created_at,
+          id, title, content_type, pdf_url, sign_off_pdf_url, archived_at, created_at,
           creator:profiles!created_by(full_name),
           toolbox_talk_signatures(id)
         `)
         .eq('site_id', profile.site_id)
         .eq('status', 'archived')
         .order('archived_at', { ascending: false })
-        .then(({ data }) => {
+        .then(({ data, error }) => {
+          if (error) {
+            setFetchError(error.message)
+            setIsLoading(false)
+            return
+          }
           const raw = (data as unknown as ArchivedTalkRaw[]) ?? []
           setTalks(
             raw.map((t) => ({
               id: t.id,
               title: t.title,
               content_type: t.content_type,
+              pdf_url: t.pdf_url,
               sign_off_pdf_url: t.sign_off_pdf_url,
               archived_at: t.archived_at,
               created_at: t.created_at,
@@ -90,10 +100,15 @@ export default function ToolboxTalkArchiveScreen() {
   )
 
   async function handleViewSignOff(talk: ArchivedTalk) {
-    if (!talk.sign_off_pdf_url) return
-    const { data } = await supabase.storage
+    const storagePath = talk.sign_off_pdf_url ?? talk.pdf_url
+    if (!storagePath) return
+    const { data, error } = await supabase.storage
       .from('toolbox-talk-pdfs')
-      .createSignedUrl(talk.sign_off_pdf_url, 3600)
+      .createSignedUrl(storagePath, 3600)
+    if (error) {
+      Alert.alert('Error', `Could not open document: ${error.message}`)
+      return
+    }
     if (data?.signedUrl) Linking.openURL(data.signedUrl)
   }
 
@@ -104,7 +119,11 @@ export default function ToolboxTalkArchiveScreen() {
         { label: 'Toolbox Talk', href: '/(appointed-person)/toolbox-talk/' },
         { label: 'Archive' },
       ]} />
-      {isLoading ? (
+      {fetchError ? (
+        <View style={styles.loadingContainer}>
+          <Text style={styles.errorText}>{fetchError}</Text>
+        </View>
+      ) : isLoading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
         </View>
@@ -132,16 +151,18 @@ export default function ToolboxTalkArchiveScreen() {
                 Archived {formatDate(item.archived_at ?? item.created_at)} · {item.sig_count} {item.sig_count === 1 ? 'signature' : 'signatures'}
               </Text>
               <Text style={styles.cardCreator}>{item.creator?.full_name ?? '—'}</Text>
-              {item.sign_off_pdf_url ? (
+              {(item.sign_off_pdf_url || item.pdf_url) ? (
                 <TouchableOpacity
                   style={styles.pdfBtn}
                   onPress={() => handleViewSignOff(item)}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.pdfBtnText}>View Sign-Off PDF →</Text>
+                  <Text style={styles.pdfBtnText}>
+                    {item.sign_off_pdf_url ? 'View Sign-Off PDF →' : 'View Original PDF →'}
+                  </Text>
                 </TouchableOpacity>
               ) : (
-                <Text style={styles.noPdfText}>No sign-off PDF generated</Text>
+                <Text style={styles.noPdfText}>No document available</Text>
               )}
             </View>
           )}
@@ -179,4 +200,5 @@ const styles = StyleSheet.create({
   pdfBtn: { alignSelf: 'flex-start' },
   pdfBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
   noPdfText: { fontSize: FontSize.xs, color: Colors.textMuted },
+  errorText: { fontSize: FontSize.sm, color: Colors.danger, textAlign: 'center', padding: Spacing.md },
 })

@@ -85,7 +85,18 @@ async function uploadFileToStorage(
 
   if (error) {
     console.error('STORAGE UPLOAD ERROR:', JSON.stringify(error))
-    throw new Error(`Storage upload failed: ${error.message} (${JSON.stringify(error)})`)
+    if (
+      error.message === 'Bucket not found' ||
+      (error as any).statusCode === '404' ||
+      (error as any).error === 'Bucket not found'
+    ) {
+      throw new Error(
+        'Storage bucket "toolbox-talk-pdfs" does not exist.\n\n' +
+        'To fix: open the Supabase Dashboard → Storage → New Bucket → ' +
+        'create a bucket named "toolbox-talk-pdfs" (set to Private).'
+      )
+    }
+    throw new Error(`Storage upload failed: ${error.message}`)
   }
 
   console.log('STORAGE UPLOAD SUCCESS:', data)

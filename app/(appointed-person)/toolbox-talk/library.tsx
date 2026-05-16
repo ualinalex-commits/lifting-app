@@ -46,18 +46,29 @@ export default function ToolboxTalkLibrary() {
   const { profile } = useAuth()
   const [talks, setTalks] = useState<LibraryTalk[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [fetchError, setFetchError] = useState<string | null>(null)
   const [creatingId, setCreatingId] = useState<string | null>(null)
 
   const fetchTalks = useCallback(async () => {
-    if (!profile?.company_id) return
+    if (!profile?.company_id) {
+      setFetchError('Your account is not linked to a company. Contact your administrator.')
+      setIsLoading(false)
+      return
+    }
     setIsLoading(true)
-    const { data } = await supabase
+    setFetchError(null)
+    const { data, error } = await supabase
       .from('toolbox_talk_library')
       .select('id, title, content_type, pdf_url, is_archived, created_at, creator:profiles!created_by(full_name)')
       .eq('company_id', profile.company_id)
       .eq('is_archived', false)
       .order('created_at', { ascending: false })
-    setTalks((data as unknown as LibraryTalk[]) ?? [])
+    if (error) {
+      setFetchError(error.message)
+      setTalks([])
+    } else {
+      setTalks((data as unknown as LibraryTalk[]) ?? [])
+    }
     setIsLoading(false)
   }, [profile?.company_id])
 
@@ -117,7 +128,11 @@ export default function ToolboxTalkLibrary() {
         { label: 'Toolbox Talk', href: '/(appointed-person)/toolbox-talk/' },
         { label: 'Library' },
       ]} />
-      {isLoading ? (
+      {fetchError ? (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{fetchError}</Text>
+        </View>
+      ) : isLoading ? (
         <ActivityIndicator style={styles.loadingSpinner} color={Colors.primary} />
       ) : (
         <FlatList
@@ -210,4 +225,6 @@ const styles = StyleSheet.create({
   useBtnDisabled: { opacity: 0.5 },
   useBtnText: { color: Colors.textInverse, fontWeight: '700', fontSize: FontSize.sm },
   archiveText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.danger },
+  errorContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl },
+  errorText: { fontSize: FontSize.sm, color: Colors.danger, textAlign: 'center', lineHeight: 20 },
 })

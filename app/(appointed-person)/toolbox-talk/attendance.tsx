@@ -127,6 +127,19 @@ export default function AttendanceScreen() {
     ]} />
   )
 
+  if (!canManage) {
+    return (
+      <ScreenWrapper edges={['bottom']}>
+        {breadcrumb}
+        <View style={styles.centered}>
+          <Text style={styles.emptyText}>
+            This screen is only accessible to appointed persons and crane supervisors.
+          </Text>
+        </View>
+      </ScreenWrapper>
+    )
+  }
+
   if (!talk_id) {
     return (
       <ScreenWrapper edges={['bottom']}>
