@@ -8,6 +8,7 @@ import { useRouter, useFocusEffect } from 'expo-router'
 import * as DocumentPicker from 'expo-document-picker'
 import { WebView } from 'react-native-webview'
 import { ScreenWrapper } from '@/components/screen-wrapper'
+import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
@@ -250,6 +251,10 @@ export default function ToolboxTalkHome() {
 
   return (
     <ScreenWrapper edges={['bottom']}>
+      <Breadcrumb items={[
+        { label: 'Dashboard', href: '/(appointed-person)/' },
+        { label: 'Toolbox Talk' },
+      ]} />
       {isUploading && (
         <View style={styles.overlay}>
           <View style={styles.overlayCard}>

@@ -7,6 +7,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { EmptyState } from '@/components/empty-state'
+import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
@@ -151,9 +152,17 @@ export default function CraneLogsScreen() {
     onLogPress: goToLog, onOpenLog: openLog,
   }
 
+  const breadcrumb = (
+    <Breadcrumb items={[
+      { label: 'Dashboard', href: '/(appointed-person)/' },
+      { label: 'Crane Logs' },
+    ]} />
+  )
+
   if (isDesktop) {
     return (
       <ScreenWrapper edges={['bottom']}>
+        {breadcrumb}
         <View style={root.split}>
           <View style={root.left}><LogList {...listProps} /></View>
           <View style={root.right}><RightPanel logs={logs} tab={rightTab} onTab={setRightTab} /></View>
@@ -164,6 +173,7 @@ export default function CraneLogsScreen() {
 
   return (
     <ScreenWrapper edges={['bottom']}>
+      {breadcrumb}
       <View style={root.mobileBar}>
         {mobileView === 'list' ? (
           <TouchableOpacity style={root.statsBtn} onPress={() => setMobileView('stats')} activeOpacity={0.85}>

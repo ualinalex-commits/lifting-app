@@ -1,10 +1,15 @@
 import { View, Text, StyleSheet } from 'react-native'
 import { ScreenWrapper } from '@/components/screen-wrapper'
+import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme'
 
 export default function CraneSchedule() {
   return (
     <ScreenWrapper>
+      <Breadcrumb items={[
+        { label: 'Dashboard', href: '/(appointed-person)/' },
+        { label: 'Crane Schedule' },
+      ]} />
       <View style={styles.container}>
         <View style={styles.iconWrap}>
           <Text style={styles.icon}>📅</Text>

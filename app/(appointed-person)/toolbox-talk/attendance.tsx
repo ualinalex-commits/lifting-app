@@ -5,6 +5,7 @@ import {
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
+import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
@@ -118,9 +119,18 @@ export default function AttendanceScreen() {
     )
   }
 
+  const breadcrumb = (
+    <Breadcrumb items={[
+      { label: 'Dashboard', href: '/(appointed-person)/' },
+      { label: 'Toolbox Talk', href: '/(appointed-person)/toolbox-talk/' },
+      { label: 'Attendance' },
+    ]} />
+  )
+
   if (!talk_id) {
     return (
       <ScreenWrapper edges={['bottom']}>
+        {breadcrumb}
         <View style={styles.centered}>
           <Text style={styles.emptyText}>No active toolbox talk.</Text>
         </View>
@@ -130,6 +140,7 @@ export default function AttendanceScreen() {
 
   return (
     <ScreenWrapper edges={['bottom']}>
+      {breadcrumb}
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>

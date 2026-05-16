@@ -6,6 +6,7 @@ import {
 import { useFocusEffect } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { EmptyState } from '@/components/empty-state'
+import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
@@ -98,6 +99,11 @@ export default function ToolboxTalkArchiveScreen() {
 
   return (
     <ScreenWrapper edges={['bottom']}>
+      <Breadcrumb items={[
+        { label: 'Dashboard', href: '/(appointed-person)/' },
+        { label: 'Toolbox Talk', href: '/(appointed-person)/toolbox-talk/' },
+        { label: 'Archive' },
+      ]} />
       {isLoading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />

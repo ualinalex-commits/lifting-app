@@ -6,6 +6,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import SignatureCanvas from 'react-native-signature-canvas'
 import { ScreenWrapper } from '@/components/screen-wrapper'
+import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
@@ -157,9 +158,18 @@ export default function SignTalk() {
     sigRef.current?.readSignature()
   }
 
+  const breadcrumb = (
+    <Breadcrumb items={[
+      { label: 'Dashboard', href: '/(appointed-person)/' },
+      { label: 'Toolbox Talk', href: '/(appointed-person)/toolbox-talk/' },
+      { label: 'Sign Off' },
+    ]} />
+  )
+
   if (isLoadingCompany) {
     return (
       <ScreenWrapper edges={['bottom']}>
+        {breadcrumb}
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
         </View>
@@ -169,6 +179,7 @@ export default function SignTalk() {
 
   return (
     <ScreenWrapper edges={['bottom']}>
+      {breadcrumb}
       <ScrollView contentContainerStyle={styles.scroll}>
         {/* Pre-filled details */}
         <View style={styles.card}>

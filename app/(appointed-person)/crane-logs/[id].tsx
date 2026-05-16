@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { StatusBadge, OpenClosedBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
+import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 
@@ -126,9 +127,18 @@ export default function CraneLogDetail() {
     }
   }
 
+  const breadcrumb = (
+    <Breadcrumb items={[
+      { label: 'Dashboard', href: '/(appointed-person)/' },
+      { label: 'Crane Logs', href: '/(appointed-person)/crane-logs/' },
+      { label: 'Log Detail' },
+    ]} />
+  )
+
   if (isLoading) {
     return (
       <ScreenWrapper edges={['bottom']}>
+        {breadcrumb}
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
         </View>
@@ -139,6 +149,7 @@ export default function CraneLogDetail() {
   if (!log) {
     return (
       <ScreenWrapper edges={['bottom']}>
+        {breadcrumb}
         <EmptyState title="Log not found" message="This crane log could not be found." icon="📋" />
       </ScreenWrapper>
     )
@@ -154,6 +165,7 @@ export default function CraneLogDetail() {
 
   return (
     <ScreenWrapper edges={['bottom']}>
+      {breadcrumb}
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.statusHeader}>
           <View style={styles.statusLeft}>

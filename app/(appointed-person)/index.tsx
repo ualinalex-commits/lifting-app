@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native'
 import { useRouter } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
+import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
@@ -47,6 +48,8 @@ export default function Dashboard() {
       <View style={styles.roleBar}>
         <Text style={styles.roleText}>Appointed Person</Text>
       </View>
+
+      <Breadcrumb items={[{ label: 'Dashboard' }]} />
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.sectionTitle}>Site Operations</Text>
