@@ -1,6 +1,7 @@
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { AuthProvider } from '@/lib/auth'
+import { DevRoleSwitcher } from '@/components/dev-role-switcher'
 import { Colors } from '@/constants/theme'
 
 export default function RootLayout() {
@@ -16,6 +17,7 @@ export default function RootLayout() {
         <Stack.Screen name="(mewp)" />
       </Stack>
       <StatusBar style="auto" />
+      <DevRoleSwitcher />
     </AuthProvider>
   )
 }

@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react'
 import { Session } from '@supabase/supabase-js'
 import { router } from 'expo-router'
 import { supabase, isSupabaseConfigured } from './supabase'
+import { isDevMode } from './dev-mode'
 
 export type UserRole =
   | 'main_admin'
@@ -38,6 +39,11 @@ interface AuthContextType {
   sendOtp: (email: string) => Promise<{ error: string | null }>
   verifyOtp: (email: string, token: string) => Promise<{ error: string | null }>
   signOut: () => Promise<void>
+  // Dev-only role override (undefined = not overridden, use real role)
+  devRole: UserRole | undefined
+  setDevRole: (role: UserRole | undefined) => void
+  // The real Supabase role, unaffected by dev override
+  actualRole: UserRole
 }
 
 const AuthContext = createContext<AuthContextType | null>(null)
@@ -56,9 +62,12 @@ function isNetworkError(message: string): boolean {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
-  const [role, setRole] = useState<UserRole>(null)
+  const [actualRole, setActualRole] = useState<UserRole>(null)
+  const [devRoleOverride, setDevRoleOverride] = useState<UserRole | undefined>(undefined)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+
+  const role: UserRole = (isDevMode() && devRoleOverride !== undefined) ? devRoleOverride : actualRole
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -75,7 +84,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (session) {
         fetchProfile(session.user.id)
       } else {
-        setRole(null)
+        setActualRole(null)
         setProfile(null)
         setIsLoading(false)
       }
@@ -93,7 +102,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .single()
       if (data) {
         setProfile(data as Profile)
-        setRole(data.role as UserRole)
+        setActualRole(data.role as UserRole)
       }
     } finally {
       setIsLoading(false)
@@ -155,7 +164,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ session, role, profile, isLoading, sendOtp, verifyOtp, signOut }}>
+    <AuthContext.Provider value={{
+      session, role, profile, isLoading, sendOtp, verifyOtp, signOut,
+      devRole: devRoleOverride,
+      setDevRole: setDevRoleOverride,
+      actualRole,
+    }}>
       {children}
     </AuthContext.Provider>
   )

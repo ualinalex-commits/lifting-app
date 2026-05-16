@@ -15,6 +15,7 @@ import { useAuth } from '@/lib/auth'
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type LogStatus = 'working' | 'service' | 'thorough_examination' | 'winded_off' | 'breaking_down'
+type DateFilter = 'today' | 'week' | 'month' | 'all'
 
 interface CraneLog {
   id: string
@@ -54,9 +55,23 @@ const LABEL_W = 76
 const CHART_W = 540
 const DESKTOP = 768
 
+const DATE_FILTERS: { key: DateFilter; label: string }[] = [
+  { key: 'today', label: 'Today' },
+  { key: 'week', label: 'This Week' },
+  { key: 'month', label: 'This Month' },
+  { key: 'all', label: 'All Time' },
+]
+
+// Palette for subcontractors — cycles if more than 10
+const SUB_PALETTE = [
+  '#0F2544', '#E8930A', '#16A34A', '#DC2626',
+  '#7C3AED', '#0284C7', '#DB2777', '#D97706',
+  '#0D9488', '#9333EA',
+]
+
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
-function getWeekStart() {
+function getWeekStart(): Date {
   const d = new Date()
   const day = d.getDay()
   d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
@@ -64,10 +79,56 @@ function getWeekStart() {
   return d
 }
 
+function getMonthStart(): Date {
+  const d = new Date()
+  return new Date(d.getFullYear(), d.getMonth(), 1)
+}
+
 function getTodayBounds() {
   const start = new Date(); start.setHours(0, 0, 0, 0)
   const end = new Date(); end.setHours(23, 59, 59, 999)
   return { start: start.getTime(), end: end.getTime() }
+}
+
+function getDayBounds(date: Date) {
+  const start = new Date(date); start.setHours(0, 0, 0, 0)
+  const end = new Date(date); end.setHours(23, 59, 59, 999)
+  return { start: start.getTime(), end: end.getTime() }
+}
+
+function getFilteredLogs(logs: CraneLog[], filter: DateFilter): CraneLog[] {
+  if (filter === 'all') return logs
+  const { start: todayStart, end: todayEnd } = getTodayBounds()
+  if (filter === 'today') {
+    return logs.filter(l => {
+      const s = new Date(l.start_time).getTime()
+      return s >= todayStart && s <= todayEnd
+    })
+  }
+  if (filter === 'week') {
+    const weekStart = getWeekStart().getTime()
+    return logs.filter(l => new Date(l.start_time).getTime() >= weekStart)
+  }
+  const monthStart = getMonthStart().getTime()
+  return logs.filter(l => new Date(l.start_time).getTime() >= monthStart)
+}
+
+function periodLabel(filter: DateFilter): string {
+  switch (filter) {
+    case 'today': return 'today'
+    case 'week': return 'this week'
+    case 'month': return 'this month'
+    case 'all': return 'all time'
+  }
+}
+
+function periodTitle(filter: DateFilter): string {
+  switch (filter) {
+    case 'today': return 'Today'
+    case 'week': return 'This Week'
+    case 'month': return 'This Month'
+    case 'all': return 'All Time'
+  }
 }
 
 function logDurationSeconds(log: CraneLog): number {
@@ -402,16 +463,17 @@ const lr = StyleSheet.create({
 // ─── Right Panel ─────────────────────────────────────────────────────────────
 
 function RightPanel({
-  logs,
-  tab,
-  onTab,
+  logs, tab, onTab,
 }: {
   logs: CraneLog[]
   tab: 'analytics' | 'timeline'
   onTab(t: 'analytics' | 'timeline'): void
 }) {
+  const [dateFilter, setDateFilter] = useState<DateFilter>('week')
+
   return (
     <View style={{ flex: 1 }}>
+      {/* Tab bar */}
       <View style={rp.tabBar}>
         {(['analytics', 'timeline'] as const).map(t => (
           <TouchableOpacity
@@ -425,7 +487,14 @@ function RightPanel({
           </TouchableOpacity>
         ))}
       </View>
-      {tab === 'analytics' ? <AnalyticsPanel logs={logs} /> : <TimelinePanel logs={logs} />}
+
+      {/* Shared date filter — applies to both Analytics and Timeline tabs */}
+      <DateFilterPills value={dateFilter} onChange={setDateFilter} />
+
+      {tab === 'analytics'
+        ? <AnalyticsPanel logs={logs} dateFilter={dateFilter} />
+        : <TimelinePanel logs={logs} dateFilter={dateFilter} />
+      }
     </View>
   )
 }
@@ -450,85 +519,136 @@ const rp = StyleSheet.create({
   tabTextActive: { color: Colors.primary },
 })
 
+// ─── Date Filter Pills ────────────────────────────────────────────────────────
+
+function DateFilterPills({ value, onChange }: { value: DateFilter; onChange(f: DateFilter): void }) {
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={df.scroll}
+      contentContainerStyle={df.row}
+    >
+      {DATE_FILTERS.map(f => (
+        <TouchableOpacity
+          key={f.key}
+          style={[df.pill, value === f.key && df.pillOn]}
+          onPress={() => onChange(f.key)}
+          activeOpacity={0.7}
+        >
+          <Text style={[df.pillText, value === f.key && df.pillTextOn]}>{f.label}</Text>
+        </TouchableOpacity>
+      ))}
+    </ScrollView>
+  )
+}
+
+const df = StyleSheet.create({
+  scroll: {
+    flexGrow: 0,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  row: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs + 2,
+    gap: Spacing.xs,
+    alignItems: 'center',
+  },
+  pill: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  pillOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  pillText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
+  pillTextOn: { color: Colors.textInverse },
+})
+
 // ─── Analytics Panel ─────────────────────────────────────────────────────────
 
-function AnalyticsPanel({ logs }: { logs: CraneLog[] }) {
-  const now = Date.now()
-  const { start: todayMs, end: todayEndMs } = getTodayBounds()
-  const weekStartMs = getWeekStart().getTime()
+function AnalyticsPanel({ logs, dateFilter }: { logs: CraneLog[]; dateFilter: DateFilter }) {
+  const filteredLogs = useMemo(() => getFilteredLogs(logs, dateFilter), [logs, dateFilter])
+  const period = periodLabel(dateFilter)
+  const title = periodTitle(dateFilter)
 
-  const weekLogs = useMemo(
-    () => logs.filter(l => new Date(l.start_time).getTime() >= weekStartMs),
-    [logs, weekStartMs],
+  const totalSecs = useMemo(
+    () => filteredLogs.reduce((sum, l) => sum + logDurationSeconds(l), 0),
+    [filteredLogs],
   )
-
-  const todaySeconds = useMemo(() => weekLogs.reduce((sum, l) => {
-    const s = Math.max(new Date(l.start_time).getTime(), todayMs)
-    const e = Math.min(l.end_time ? new Date(l.end_time).getTime() : now, todayEndMs)
-    return sum + Math.max(0, (e - s) / 1000)
-  }, 0), [weekLogs, todayMs, todayEndMs])
 
   const hoursPerCrane = useMemo(() => {
     const m = new Map<string, { ref: string; secs: number }>()
-    for (const l of weekLogs) {
+    for (const l of filteredLogs) {
       const key = l.crane?.id ?? 'unknown'
       const cur = m.get(key) ?? { ref: l.crane?.crane_ref ?? '—', secs: 0 }
       cur.secs += logDurationSeconds(l)
       m.set(key, cur)
     }
     return [...m.values()].sort((a, b) => b.secs - a.secs)
-  }, [weekLogs])
+  }, [filteredLogs])
 
   const statusSecs = useMemo(() => {
     const m: Record<LogStatus, number> = {
       working: 0, service: 0, thorough_examination: 0, winded_off: 0, breaking_down: 0,
     }
-    for (const l of weekLogs) m[l.status] = (m[l.status] ?? 0) + logDurationSeconds(l)
+    for (const l of filteredLogs) m[l.status] = (m[l.status] ?? 0) + logDurationSeconds(l)
     return m
-  }, [weekLogs])
+  }, [filteredLogs])
 
   const hoursByDay = useMemo(() => {
     const arr: number[] = Array(7).fill(0)
-    for (const l of weekLogs) {
+    for (const l of filteredLogs) {
       const di = (new Date(l.start_time).getDay() + 6) % 7
       arr[di] += logDurationSeconds(l)
     }
     return arr
-  }, [weekLogs])
+  }, [filteredLogs])
 
-  const closedLogs = useMemo(() => logs.filter(l => l.is_closed && l.duration_seconds != null), [logs])
+  const closedLogs = useMemo(
+    () => filteredLogs.filter(l => l.is_closed && l.duration_seconds != null),
+    [filteredLogs],
+  )
   const avgSecs = closedLogs.length > 0
     ? closedLogs.reduce((s, l) => s + l.duration_seconds!, 0) / closedLogs.length
     : 0
 
   const topCrane = hoursPerCrane[0]?.ref ?? '—'
-  const maxSecs = hoursPerCrane[0]?.secs ?? 1
+  const maxCraneSecs = hoursPerCrane[0]?.secs ?? 1
   const busiestIdx = hoursByDay.indexOf(Math.max(...hoursByDay))
   const busiestDay = hoursByDay[busiestIdx] > 0 ? DAYS[busiestIdx] : '—'
   const totalStatusSecs = Object.values(statusSecs).reduce((a, b) => a + b, 0)
+
+  // For today: replace "Busiest Day" with open log count (more useful for a single day)
+  const card4 = dateFilter === 'today'
+    ? { label: 'Live Logs', value: String(filteredLogs.filter(l => !l.is_closed).length), sub: 'currently open' }
+    : { label: 'Busiest Day', value: busiestDay, sub: period }
 
   return (
     <ScrollView contentContainerStyle={an.scroll}>
       {/* Summary cards */}
       <View style={an.cards}>
-        <SummaryCard label="Today" value={fmtHours(todaySeconds)} sub="total hours" />
-        <SummaryCard label="Top Crane" value={topCrane} sub="this week" />
+        <SummaryCard label="Total Hours" value={fmtHours(totalSecs)} sub={period} />
+        <SummaryCard label="Top Crane" value={topCrane} sub={period} />
         <SummaryCard label="Avg Duration" value={fmtHours(avgSecs)} sub="per log" />
-        <SummaryCard label="Busiest Day" value={busiestDay} sub="this week" />
+        <SummaryCard label={card4.label} value={card4.value} sub={card4.sub} />
       </View>
 
-      {/* Hours per crane bar chart */}
+      {/* Hours per crane */}
       <View style={an.section}>
-        <Text style={an.sectionTitle}>Hours per Crane — This Week</Text>
+        <Text style={an.sectionTitle}>Hours per Crane — {title}</Text>
         {hoursPerCrane.length === 0 ? (
-          <Text style={an.empty}>No activity this week</Text>
+          <Text style={an.empty}>No activity {period}</Text>
         ) : hoursPerCrane.map(item => (
           <View key={item.ref} style={an.barRow}>
             <Text style={an.barLabel} numberOfLines={1}>{item.ref}</Text>
             <View style={an.barTrack}>
-              <View
-                style={[an.barFill, { width: `${(item.secs / maxSecs) * 100}%` as any }]}
-              />
+              <View style={[an.barFill, { width: `${(item.secs / maxCraneSecs) * 100}%` as any }]} />
             </View>
             <Text style={an.barVal}>{fmtHours(item.secs)}</Text>
           </View>
@@ -537,20 +657,14 @@ function AnalyticsPanel({ logs }: { logs: CraneLog[] }) {
 
       {/* Status breakdown */}
       <View style={an.section}>
-        <Text style={an.sectionTitle}>Status Breakdown — This Week</Text>
+        <Text style={an.sectionTitle}>Status Breakdown — {title}</Text>
         {totalStatusSecs === 0 ? (
-          <Text style={an.empty}>No activity this week</Text>
+          <Text style={an.empty}>No activity {period}</Text>
         ) : (
           <>
             <View style={an.stackedBar}>
               {ALL_STATUSES.filter(s => statusSecs[s] > 0).map(s => (
-                <View
-                  key={s}
-                  style={[an.stackSegment, {
-                    flex: statusSecs[s],
-                    backgroundColor: STATUS_COLORS[s],
-                  }]}
-                />
+                <View key={s} style={[an.stackSegment, { flex: statusSecs[s], backgroundColor: STATUS_COLORS[s] }]} />
               ))}
             </View>
             <View style={an.legend}>
@@ -567,6 +681,9 @@ function AnalyticsPanel({ logs }: { logs: CraneLog[] }) {
           </>
         )}
       </View>
+
+      {/* Subcontractor usage */}
+      <SubcontractorSection logs={filteredLogs} period={period} title={title} />
     </ScrollView>
   )
 }
@@ -677,38 +794,282 @@ const an = StyleSheet.create({
   },
 })
 
+// ─── Subcontractor Section ────────────────────────────────────────────────────
+
+function SubcontractorSection({ logs, period, title }: { logs: CraneLog[]; period: string; title: string }) {
+  // Only logs that have a subcontractor assigned (working logs)
+  const workingLogs = useMemo(() => logs.filter(l => l.subcontractor != null), [logs])
+
+  // Per-subcontractor aggregation
+  const subStats = useMemo(() => {
+    const m = new Map<string, {
+      id: string; name: string; totalSecs: number; liftCount: number
+      cranes: Map<string, { ref: string; secs: number }>
+    }>()
+    for (const l of workingLogs) {
+      const sub = l.subcontractor!
+      if (!m.has(sub.id)) m.set(sub.id, { id: sub.id, name: sub.name, totalSecs: 0, liftCount: 0, cranes: new Map() })
+      const e = m.get(sub.id)!
+      const secs = logDurationSeconds(l)
+      e.totalSecs += secs
+      e.liftCount++
+      if (l.crane) {
+        const ce = e.cranes.get(l.crane.id) ?? { ref: l.crane.crane_ref, secs: 0 }
+        ce.secs += secs
+        e.cranes.set(l.crane.id, ce)
+      }
+    }
+    return [...m.values()].sort((a, b) => b.totalSecs - a.totalSecs)
+  }, [workingLogs])
+
+  // Per-crane subcontractor breakdown (for stacked bars)
+  const craneBreakdown = useMemo(() => {
+    const m = new Map<string, { ref: string; subs: Map<string, { id: string; name: string; secs: number }> }>()
+    for (const l of workingLogs) {
+      if (!l.crane || !l.subcontractor) continue
+      if (!m.has(l.crane.id)) m.set(l.crane.id, { ref: l.crane.crane_ref, subs: new Map() })
+      const crane = m.get(l.crane.id)!
+      const sub = l.subcontractor
+      const se = crane.subs.get(sub.id) ?? { id: sub.id, name: sub.name, secs: 0 }
+      se.secs += logDurationSeconds(l)
+      crane.subs.set(sub.id, se)
+    }
+    return [...m.values()].sort((a, b) => {
+      const at = [...a.subs.values()].reduce((s, x) => s + x.secs, 0)
+      const bt = [...b.subs.values()].reduce((s, x) => s + x.secs, 0)
+      return bt - at
+    })
+  }, [workingLogs])
+
+  // Assign a stable color to each subcontractor by their rank in subStats
+  const subColorMap = useMemo(() => {
+    const m = new Map<string, string>()
+    subStats.forEach((s, i) => m.set(s.id, SUB_PALETTE[i % SUB_PALETTE.length]))
+    return m
+  }, [subStats])
+
+  if (subStats.length === 0) {
+    return (
+      <View style={an.section}>
+        <Text style={an.sectionTitle}>Usage by Subcontractor — {title}</Text>
+        <Text style={an.empty}>No subcontractor activity {period}</Text>
+      </View>
+    )
+  }
+
+  const maxSubSecs = subStats[0].totalSecs || 1
+
+  return (
+    <View style={an.section}>
+      <Text style={an.sectionTitle}>Usage by Subcontractor — {title}</Text>
+
+      {/* Total hours per subcontractor */}
+      <Text style={sb.subHeading}>Total Hours</Text>
+      {subStats.map(sub => (
+        <View key={sub.id} style={an.barRow}>
+          <Text style={an.barLabel} numberOfLines={1}>{sub.name}</Text>
+          <View style={an.barTrack}>
+            <View style={[an.barFill, {
+              width: `${(sub.totalSecs / maxSubSecs) * 100}%` as any,
+              backgroundColor: subColorMap.get(sub.id) ?? Colors.primary,
+            }]} />
+          </View>
+          <Text style={an.barVal}>{fmtHours(sub.totalSecs)}</Text>
+        </View>
+      ))}
+
+      {/* Per-crane breakdown — stacked bars */}
+      {craneBreakdown.length > 0 && (
+        <>
+          <View style={sb.sep} />
+          <Text style={sb.subHeading}>Breakdown by Crane</Text>
+          {craneBreakdown.map(crane => {
+            const entries = [...crane.subs.values()].sort((a, b) => b.secs - a.secs)
+            const craneTotal = entries.reduce((s, e) => s + e.secs, 0)
+            return (
+              <View key={crane.ref} style={sb.craneRow}>
+                <Text style={sb.craneLabel} numberOfLines={1}>{crane.ref}</Text>
+                <View style={sb.stackedBar}>
+                  {entries.map(e => (
+                    <View
+                      key={e.id}
+                      style={{ flex: e.secs, backgroundColor: subColorMap.get(e.id) ?? Colors.primary }}
+                    />
+                  ))}
+                </View>
+                <Text style={an.barVal}>{fmtHours(craneTotal)}</Text>
+              </View>
+            )
+          })}
+
+          {/* Color legend for stacked bar */}
+          <View style={[an.legend, { marginTop: Spacing.sm }]}>
+            {subStats.map(sub => (
+              <View key={sub.id} style={an.legendRow}>
+                <View style={[an.legendDot, { backgroundColor: subColorMap.get(sub.id) }]} />
+                <Text style={an.legendLabel} numberOfLines={1}>{sub.name}</Text>
+              </View>
+            ))}
+          </View>
+        </>
+      )}
+
+      {/* Summary table */}
+      <View style={sb.sep} />
+      <Text style={sb.subHeading}>Summary</Text>
+
+      <View style={sb.tableHeader}>
+        <Text style={[sb.th, { flex: 2.5 }]}>Subcontractor</Text>
+        <Text style={[sb.th, sb.thR, { flex: 1.2 }]}>Hours</Text>
+        <Text style={[sb.th, sb.thR, { flex: 0.9 }]}>Lifts</Text>
+        <Text style={[sb.th, sb.thR, { flex: 1.8 }]}>Top Crane</Text>
+      </View>
+
+      {subStats.map((sub, i) => {
+        const topCrane = [...sub.cranes.values()].sort((a, b) => b.secs - a.secs)[0]?.ref ?? '—'
+        return (
+          <View key={sub.id} style={[sb.tableRow, i % 2 === 1 && sb.tableRowAlt]}>
+            <View style={[sb.colorDot, { backgroundColor: subColorMap.get(sub.id) }]} />
+            <Text style={[sb.td, { flex: 2.5 }]} numberOfLines={1}>{sub.name}</Text>
+            <Text style={[sb.td, sb.tdR, { flex: 1.2 }]}>{fmtHours(sub.totalSecs)}</Text>
+            <Text style={[sb.td, sb.tdR, { flex: 0.9 }]}>{sub.liftCount}</Text>
+            <Text style={[sb.td, sb.tdR, { flex: 1.8 }]} numberOfLines={1}>{topCrane}</Text>
+          </View>
+        )
+      })}
+    </View>
+  )
+}
+
+const sb = StyleSheet.create({
+  subHeading: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: Spacing.sm,
+  },
+  sep: {
+    height: 1,
+    backgroundColor: Colors.border,
+    marginVertical: Spacing.md,
+  },
+  craneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: 6,
+  },
+  craneLabel: {
+    width: 72,
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+    color: Colors.text,
+  },
+  stackedBar: {
+    flex: 1,
+    flexDirection: 'row',
+    height: 20,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: Colors.background,
+  },
+  tableHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    marginBottom: 2,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 4,
+    gap: 4,
+  },
+  tableRowAlt: {
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadius.sm,
+  },
+  th: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  thR: { textAlign: 'right' },
+  td: {
+    fontSize: FontSize.xs,
+    fontWeight: '500',
+    color: Colors.text,
+  },
+  tdR: {
+    textAlign: 'right',
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  colorDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 2,
+    flexShrink: 0,
+  },
+})
+
 // ─── Timeline Panel ───────────────────────────────────────────────────────────
 
-function TimelinePanel({ logs }: { logs: CraneLog[] }) {
-  const now = Date.now()
-  const { start: todayMs, end: todayEndMs } = getTodayBounds()
-  const dayDuration = 24 * 60 * 60 * 1000
+function TimelinePanel({ logs, dateFilter }: { logs: CraneLog[]; dateFilter: DateFilter }) {
+  if (dateFilter === 'month') return <MonthTimelineView logs={logs} />
+  if (dateFilter === 'week' || dateFilter === 'all') return <WeekTimelineView logs={logs} />
+  // today
+  const { start: dayMs, end: dayEndMs } = getTodayBounds()
+  return <DayGanttChart logs={logs} dayMs={dayMs} dayEndMs={dayEndMs} isToday />
+}
 
-  const todayLogs = useMemo(() => logs.filter(l => {
-    const s = new Date(l.start_time).getTime()
-    const e = l.end_time ? new Date(l.end_time).getTime() : now
-    return s <= todayEndMs && e >= todayMs
-  }), [logs, todayMs, todayEndMs])
+// ─── Day Gantt Chart ──────────────────────────────────────────────────────────
+
+function DayGanttChart({
+  logs, dayMs, dayEndMs, isToday,
+}: {
+  logs: CraneLog[]
+  dayMs: number
+  dayEndMs: number
+  isToday: boolean
+}) {
+  const now = Date.now()
+  const dayDuration = 24 * 60 * 60 * 1000
 
   const craneRows = useMemo(() => {
     const m = new Map<string, { craneRef: string; logs: CraneLog[] }>()
-    for (const l of todayLogs) {
+    for (const l of logs) {
+      const s = new Date(l.start_time).getTime()
+      const e = l.end_time ? new Date(l.end_time).getTime() : now
+      if (s > dayEndMs || e < dayMs) continue
       const key = l.crane?.id ?? 'unknown'
       if (!m.has(key)) m.set(key, { craneRef: l.crane?.crane_ref ?? '—', logs: [] })
       m.get(key)!.logs.push(l)
     }
     return [...m.values()].sort((a, b) => a.craneRef.localeCompare(b.craneRef))
-  }, [todayLogs])
+  }, [logs, dayMs, dayEndMs])
 
-  const nowX = Math.max(0, Math.min(CHART_W, ((now - todayMs) / dayDuration) * CHART_W))
-  const todayLabel = new Date().toLocaleDateString('en-GB', {
+  const nowX = isToday
+    ? Math.max(0, Math.min(CHART_W, ((now - dayMs) / dayDuration) * CHART_W))
+    : -1
+
+  const dayLabel = new Date(dayMs).toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long',
   })
 
   if (craneRows.length === 0) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl }}>
-        <EmptyState title="No activity today" message="No crane logs opened today." icon="📅" />
+        <EmptyState title="No activity" message="No crane logs for this day." icon="📅" />
       </View>
     )
   }
@@ -716,7 +1077,7 @@ function TimelinePanel({ logs }: { logs: CraneLog[] }) {
   return (
     <View style={{ flex: 1 }}>
       <View style={tl.titleRow}>
-        <Text style={tl.title}>Today — {todayLabel}</Text>
+        <Text style={tl.title}>{dayLabel}</Text>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator style={{ flex: 1 }}>
@@ -743,37 +1104,24 @@ function TimelinePanel({ logs }: { logs: CraneLog[] }) {
                 <Text style={tl.craneLabelText} numberOfLines={1}>{craneRef}</Text>
               </View>
               <View style={tl.chartArea}>
-                {/* Hour grid lines */}
                 {HOUR_MARKS.map(h => (
-                  <View
-                    key={h}
-                    style={[tl.gridLine, { left: Math.round((h / 24) * CHART_W) }]}
-                  />
+                  <View key={h} style={[tl.gridLine, { left: Math.round((h / 24) * CHART_W) }]} />
                 ))}
-                {/* Current time line */}
-                <View style={[tl.nowLine, { left: Math.round(nowX) }]} />
-                {/* Log blocks */}
+                {nowX >= 0 && <View style={[tl.nowLine, { left: Math.round(nowX) }]} />}
                 {craneLogs.map(l => {
-                  const s = Math.max(new Date(l.start_time).getTime(), todayMs)
-                  const e = Math.min(l.end_time ? new Date(l.end_time).getTime() : now, todayEndMs)
+                  const s = Math.max(new Date(l.start_time).getTime(), dayMs)
+                  const e = Math.min(l.end_time ? new Date(l.end_time).getTime() : now, dayEndMs)
                   if (e <= s) return null
-                  const lx = Math.round(((s - todayMs) / dayDuration) * CHART_W)
+                  const lx = Math.round(((s - dayMs) / dayDuration) * CHART_W)
                   const bw = Math.max(3, Math.round(((e - s) / dayDuration) * CHART_W))
                   const color = STATUS_COLORS[l.status] ?? Colors.primary
                   return (
                     <View
                       key={l.id}
-                      style={[tl.block, {
-                        left: lx,
-                        width: bw,
-                        backgroundColor: color + 'D0',
-                        borderColor: color,
-                      }]}
+                      style={[tl.block, { left: lx, width: bw, backgroundColor: color + 'D0', borderColor: color }]}
                     >
                       {bw > 50 && (
-                        <Text style={tl.blockLabel} numberOfLines={1}>
-                          {STATUS_LABELS[l.status]}
-                        </Text>
+                        <Text style={tl.blockLabel} numberOfLines={1}>{STATUS_LABELS[l.status]}</Text>
                       )}
                     </View>
                   )
@@ -784,7 +1132,6 @@ function TimelinePanel({ logs }: { logs: CraneLog[] }) {
         </View>
       </ScrollView>
 
-      {/* Legend - outside horizontal scroll */}
       <View style={tl.legend}>
         {ALL_STATUSES.map(s => (
           <View key={s} style={tl.legendItem}>
@@ -796,6 +1143,200 @@ function TimelinePanel({ logs }: { logs: CraneLog[] }) {
     </View>
   )
 }
+
+// ─── Week Timeline View ───────────────────────────────────────────────────────
+
+function WeekTimelineView({ logs }: { logs: CraneLog[] }) {
+  const weekStart = useMemo(() => getWeekStart(), [])
+  const todayMs = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() }, [])
+  const todayDayIdx = (new Date().getDay() + 6) % 7
+  const [selectedDay, setSelectedDay] = useState(todayDayIdx)
+
+  const weekDays = useMemo(() =>
+    DAYS.map((label, i) => {
+      const d = new Date(weekStart)
+      d.setDate(weekStart.getDate() + i)
+      const { start: dayMs, end: dayEndMs } = getDayBounds(d)
+      return { label, dayMs, dayEndMs, dayNum: d.getDate() }
+    }),
+  [weekStart])
+
+  const { dayMs, dayEndMs } = weekDays[selectedDay]
+  const isToday = dayMs === todayMs
+
+  return (
+    <View style={{ flex: 1 }}>
+      {/* Day selector tabs */}
+      <View style={wk.tabs}>
+        {weekDays.map(({ label, dayMs: dMs, dayNum }, i) => {
+          const active = selectedDay === i
+          const today = dMs === todayMs
+          return (
+            <TouchableOpacity
+              key={i}
+              style={[wk.tab, active && wk.tabActive]}
+              onPress={() => setSelectedDay(i)}
+              activeOpacity={0.7}
+            >
+              <Text style={[wk.tabLabel, active && wk.tabLabelActive, today && !active && wk.tabLabelToday]}>
+                {label}
+              </Text>
+              <Text style={[wk.tabNum, active && wk.tabNumActive]}>{dayNum}</Text>
+              {today && <View style={wk.todayDot} />}
+            </TouchableOpacity>
+          )
+        })}
+      </View>
+
+      <DayGanttChart logs={logs} dayMs={dayMs} dayEndMs={dayEndMs} isToday={isToday} />
+    </View>
+  )
+}
+
+const wk = StyleSheet.create({
+  tabs: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    paddingHorizontal: 4,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 7,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+    marginBottom: -1,
+  },
+  tabActive: { borderBottomColor: Colors.primary },
+  tabLabel: { fontSize: 10, fontWeight: '600', color: Colors.textSecondary, lineHeight: 14 },
+  tabLabelActive: { color: Colors.primary },
+  tabLabelToday: { color: Colors.accent },
+  tabNum: { fontSize: 14, fontWeight: '700', color: Colors.textSecondary, lineHeight: 18 },
+  tabNumActive: { color: Colors.primary },
+  todayDot: {
+    width: 5, height: 5, borderRadius: 3,
+    backgroundColor: Colors.accent,
+    marginTop: 2,
+  },
+})
+
+// ─── Month Timeline View ──────────────────────────────────────────────────────
+
+function MonthTimelineView({ logs }: { logs: CraneLog[] }) {
+  const now = new Date()
+  const todayMs = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() }, [])
+
+  // Generate all days from start of month to today (inclusive)
+  const monthDays = useMemo(() => {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1)
+    const days: { date: Date; dayMs: number; dayEndMs: number }[] = []
+    let d = new Date(start)
+    while (d.getTime() <= todayMs) {
+      const clone = new Date(d)
+      const { start: dayMs, end: dayEndMs } = getDayBounds(clone)
+      days.push({ date: clone, dayMs, dayEndMs })
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)
+    }
+    return days
+  }, [todayMs])
+
+  // Compute total hours and log count per day (only days with activity)
+  const dailyStats = useMemo(() =>
+    monthDays.map(({ date, dayMs, dayEndMs }) => {
+      const dayLogs = logs.filter(l => {
+        const s = new Date(l.start_time).getTime()
+        return s >= dayMs && s <= dayEndMs
+      })
+      return { date, dayMs, totalSecs: dayLogs.reduce((s, l) => s + logDurationSeconds(l), 0), logCount: dayLogs.length }
+    }).filter(d => d.logCount > 0),
+  [logs, monthDays])
+
+  const maxSecs = Math.max(...dailyStats.map(d => d.totalSecs), 1)
+  const monthLabel = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+
+  if (dailyStats.length === 0) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl }}>
+        <EmptyState title="No activity this month" message="No crane logs recorded this month." icon="📅" />
+      </View>
+    )
+  }
+
+  return (
+    <ScrollView contentContainerStyle={mo.scroll}>
+      <Text style={mo.monthTitle}>{monthLabel}</Text>
+      {dailyStats.map(({ date, dayMs, totalSecs, logCount }) => {
+        const isToday = dayMs === todayMs
+        const label = date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })
+        return (
+          <View key={dayMs} style={[mo.dayRow, isToday && mo.dayRowToday]}>
+            <Text style={[mo.dateLabel, isToday && mo.dateLabelToday]}>{label}</Text>
+            <View style={mo.barTrack}>
+              <View style={[mo.barFill, { width: `${(totalSecs / maxSecs) * 100}%` as any }]} />
+            </View>
+            <Text style={mo.hoursLabel}>{fmtHours(totalSecs)}</Text>
+            <Text style={mo.logCount}>{logCount}×</Text>
+          </View>
+        )
+      })}
+    </ScrollView>
+  )
+}
+
+const mo = StyleSheet.create({
+  scroll: { padding: Spacing.md, paddingBottom: Spacing.xxl },
+  monthTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+    color: Colors.text,
+    marginBottom: Spacing.md,
+  },
+  dayRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: 5,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderRadius: BorderRadius.sm,
+  },
+  dayRowToday: { backgroundColor: Colors.primary + '12' },
+  dateLabel: {
+    width: 64,
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  dateLabelToday: { color: Colors.primary, fontWeight: '700' },
+  barTrack: {
+    flex: 1,
+    height: 16,
+    backgroundColor: Colors.background,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%' as any,
+    backgroundColor: Colors.primary,
+    borderRadius: 3,
+    opacity: 0.75,
+  },
+  hoursLabel: {
+    width: 38,
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+    color: Colors.text,
+    textAlign: 'right',
+  },
+  logCount: {
+    width: 22,
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    textAlign: 'right',
+  },
+})
 
 const ROW_H = 34
 
