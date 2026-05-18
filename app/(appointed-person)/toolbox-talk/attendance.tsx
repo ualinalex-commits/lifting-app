@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Alert,
+  ActivityIndicator, Alert, Platform,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
@@ -9,7 +9,6 @@ import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
-import { callGenerateSignOff } from '@/lib/api'
 
 interface ReadEntry {
   user_id: string
@@ -81,42 +80,79 @@ export default function AttendanceScreen() {
       .channel(`attendance-${talk_id}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'toolbox_talk_reads', filter: `talk_id=eq.${talk_id}` },
+        {
+          event: '*',
+          schema: 'public',
+          table: 'toolbox_talk_reads',
+          filter: `talk_id=eq.${talk_id}`,
+        },
         () => fetchAttendance()
       )
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'toolbox_talk_signatures', filter: `talk_id=eq.${talk_id}` },
+        {
+          event: '*',
+          schema: 'public',
+          table: 'toolbox_talk_signatures',
+          filter: `talk_id=eq.${talk_id}`,
+        },
         () => fetchAttendance()
       )
       .subscribe()
 
-    return () => { supabase.removeChannel(channel) }
-  }, [talk_id, fetchAttendance])
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [talk_id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleGenerateSignOff() {
-    Alert.alert(
-      'Generate Sign-Off',
-      'This will generate the sign-off PDF and archive this talk. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Generate',
-          onPress: async () => {
-            setIsGenerating(true)
-            const { error } = await callGenerateSignOff(talk_id)
-            setIsGenerating(false)
-            if (error) {
-              Alert.alert('Error', error)
-              return
-            }
-            Alert.alert('Done', 'Sign-off PDF generated. The talk has been archived.', [
-              { text: 'OK', onPress: () => router.back() },
-            ])
-          },
-        },
-      ]
-    )
+    if (!talk_id) return
+
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Generate sign-off page and archive this toolbox talk? Once archived it cannot be edited or signed.')
+      : await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Generate Sign-Off',
+            'This will create the combined PDF and archive the talk. Continue?',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Generate', onPress: () => resolve(true) },
+            ],
+          )
+        })
+
+    if (!confirmed) return
+
+    console.log('GENERATE: invoking edge function for talk', talk_id)
+    setIsGenerating(true)
+
+    try {
+      const { data, error } = await supabase.functions.invoke('generate-signoff', {
+        body: { talk_id },
+      })
+
+      console.log('GENERATE result:', { data, error })
+
+      if (error) {
+        console.error('GENERATE error object:', JSON.stringify(error))
+        throw new Error(error.message ?? JSON.stringify(error))
+      }
+      if (data?.error) {
+        console.error('GENERATE data.error:', data.error)
+        throw new Error(data.error)
+      }
+
+      Alert.alert('Success', 'Sign-off generated. The talk has been archived.')
+      router.replace('/(appointed-person)/toolbox-talk/archive' as any)
+    } catch (err: any) {
+      console.error('GENERATE FAILED:', err)
+      Alert.alert(
+        'Generate Failed',
+        err?.message ?? 'Could not generate sign-off page. Check that the generate-signoff Edge Function is deployed to Supabase.',
+      )
+    } finally {
+      setIsGenerating(false)
+    }
   }
 
   const breadcrumb = (

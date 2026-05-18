@@ -1,15 +1,18 @@
 import { useState, useRef, useEffect } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, Alert, ActivityIndicator,
+  StyleSheet, Alert, ActivityIndicator, Platform,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import SignatureCanvas from 'react-native-signature-canvas'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
+
+const NativeSignatureCanvas = Platform.OS !== 'web'
+  ? require('react-native-signature-canvas').default
+  : null
 
 const ROLE_LABELS: Record<string, string> = {
   appointed_person:    'Appointed Person',
@@ -57,13 +60,135 @@ function decodeBase64(base64: string): Uint8Array {
   return new Uint8Array(result)
 }
 
+function WebSignatureCanvas({ onSave, onClear }: {
+  onSave: (base64: string) => void
+  onClear: () => void
+}) {
+  const canvasRef = useRef<any>(null)
+  const isDrawing = useRef(false)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.fillStyle = '#FFFFFF'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.strokeStyle = '#000000'
+    ctx.lineWidth = 2.5
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+  }, [])
+
+  const getPos = (e: any, canvas: any) => {
+    const rect = canvas.getBoundingClientRect()
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY
+    return { x: clientX - rect.left, y: clientY - rect.top }
+  }
+
+  const startDraw = (e: any) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    isDrawing.current = true
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.strokeStyle = '#000000'
+    ctx.lineWidth = 2.5
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    const pos = getPos(e, canvas)
+    ctx.beginPath()
+    ctx.moveTo(pos.x, pos.y)
+    e.preventDefault()
+  }
+
+  const draw = (e: any) => {
+    if (!isDrawing.current) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    const pos = getPos(e, canvas)
+    ctx?.lineTo(pos.x, pos.y)
+    ctx?.stroke()
+    e.preventDefault()
+  }
+
+  const endDraw = () => {
+    isDrawing.current = false
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      // Composite white background under drawn strokes so exported PNG is white, not transparent
+      ctx.save()
+      ctx.globalCompositeOperation = 'destination-over'
+      ctx.fillStyle = '#FFFFFF'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.restore()
+    }
+    onSave(canvas.toDataURL('image/png'))
+  }
+
+  const handleClear = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.fillStyle = '#FFFFFF'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+    }
+    onClear()
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 } as any}>
+      <canvas
+        ref={canvasRef}
+        width={340}
+        height={200}
+        onMouseDown={startDraw}
+        onMouseMove={draw}
+        onMouseUp={endDraw}
+        onMouseLeave={endDraw}
+        onTouchStart={startDraw}
+        onTouchMove={draw}
+        onTouchEnd={endDraw}
+        style={{
+          border: '1.5px solid #ccc',
+          borderRadius: 8,
+          touchAction: 'none',
+          cursor: 'crosshair',
+          backgroundColor: '#fff',
+          width: '100%',
+        } as any}
+      />
+      <button
+        onClick={handleClear}
+        style={{
+          padding: '6px 16px',
+          borderRadius: 6,
+          border: '1px solid #ccc',
+          background: '#f5f5f5',
+          cursor: 'pointer',
+          fontSize: 13,
+        } as any}
+      >
+        Clear
+      </button>
+    </div>
+  )
+}
+
 export default function SignTalk() {
   const { talk_id } = useLocalSearchParams<{ talk_id: string }>()
   const router = useRouter()
   const { profile, role } = useAuth()
 
   const sigRef = useRef<any>(null)
-  const [hasSignature, setHasSignature] = useState(false)
+  const [signatureBase64, setSignatureBase64] = useState<string | null>(null)
+  const [hasDrawn, setHasDrawn] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [company, setCompany] = useState('')
   const [isLoadingCompany, setIsLoadingCompany] = useState(true)
@@ -94,10 +219,10 @@ export default function SignTalk() {
     resolveCompany()
   }, [profile, role])
 
-  async function handleConfirm(signatureBase64: string) {
+  async function handleConfirm(sig: string) {
     if (!profile?.id || !talk_id) return
 
-    const base64Data = signatureBase64.replace(/^data:image\/png;base64,/, '')
+    const base64Data = sig.replace(/^data:image\/png;base64,/, '')
     const storagePath = `${talk_id}/${profile.id}.png`
 
     setIsSubmitting(true)
@@ -146,17 +271,31 @@ export default function SignTalk() {
   }
 
   function handleClear() {
-    sigRef.current?.clearSignature()
-    setHasSignature(false)
+    if (Platform.OS !== 'web') {
+      sigRef.current?.clearSignature()
+      setHasDrawn(false)
+    }
+    setSignatureBase64(null)
   }
 
   function handleSubmitSignature() {
-    if (!hasSignature) {
-      Alert.alert('No signature', 'Please draw your signature first.')
-      return
+    if (Platform.OS === 'web') {
+      if (!signatureBase64) {
+        Alert.alert('No signature', 'Please draw your signature first.')
+        return
+      }
+      handleConfirm(signatureBase64)
+    } else {
+      if (!hasDrawn) {
+        Alert.alert('No signature', 'Please draw your signature first.')
+        return
+      }
+      sigRef.current?.readSignature()
     }
-    sigRef.current?.readSignature()
   }
+
+  // Web: enabled once a stroke has been saved. Native: enabled once drawing has begun.
+  const isSignatureReady = Platform.OS === 'web' ? !!signatureBase64 : hasDrawn
 
   const breadcrumb = (
     <Breadcrumb items={[
@@ -193,24 +332,36 @@ export default function SignTalk() {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Draw Signature</Text>
           <Text style={styles.canvasHint}>Sign in the box below using your finger.</Text>
-          <View style={styles.canvasContainer}>
-            <SignatureCanvas
-              ref={sigRef}
-              onOK={handleConfirm}
-              onEmpty={() => setHasSignature(false)}
-              onBegin={() => setHasSignature(true)}
-              descriptionText=""
-              clearText="Clear"
-              confirmText="Confirm"
-              webStyle={signatureWebStyle}
-              autoClear={false}
+
+          {Platform.OS === 'web' ? (
+            <WebSignatureCanvas
+              onSave={(base64) => setSignatureBase64(base64)}
+              onClear={() => setSignatureBase64(null)}
             />
-          </View>
-          <View style={styles.canvasActions}>
-            <TouchableOpacity style={styles.clearBtn} onPress={handleClear} activeOpacity={0.8}>
-              <Text style={styles.clearBtnText}>Clear</Text>
-            </TouchableOpacity>
-          </View>
+          ) : (
+            <>
+              <View style={styles.canvasContainer}>
+                <NativeSignatureCanvas
+                  ref={sigRef}
+                  onOK={(sig: string) => { setSignatureBase64(sig); handleConfirm(sig) }}
+                  onClear={() => { setSignatureBase64(null); setHasDrawn(false) }}
+                  onBegin={() => setHasDrawn(true)}
+                  onEmpty={() => { setHasDrawn(false); setSignatureBase64(null) }}
+                  descriptionText=""
+                  clearText="Clear"
+                  confirmText="Save"
+                  webStyle={signatureWebStyle}
+                  penColor="#000000"
+                  autoClear={false}
+                />
+              </View>
+              <View style={styles.canvasActions}>
+                <TouchableOpacity style={styles.clearBtn} onPress={handleClear} activeOpacity={0.8}>
+                  <Text style={styles.clearBtnText}>Clear</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
         </View>
 
         <View style={styles.noteCard}>
@@ -220,9 +371,9 @@ export default function SignTalk() {
         </View>
 
         <TouchableOpacity
-          style={[styles.confirmBtn, (!hasSignature || isSubmitting) && styles.confirmBtnDisabled]}
+          style={[styles.confirmBtn, (!isSignatureReady || isSubmitting) && styles.confirmBtnDisabled]}
           onPress={handleSubmitSignature}
-          disabled={!hasSignature || isSubmitting}
+          disabled={!isSignatureReady || isSubmitting}
           activeOpacity={0.8}
         >
           {isSubmitting
@@ -237,9 +388,10 @@ export default function SignTalk() {
 
 const signatureWebStyle = `
   .m-signature-pad { box-shadow: none; border: none; }
-  .m-signature-pad--body { border: none; }
+  .m-signature-pad--body { border: none; background: #FFFFFF !important; }
+  .m-signature-pad--body canvas { background: #FFFFFF !important; }
   .m-signature-pad--footer { display: none; }
-  body, html { width: 100%; height: 100%; margin: 0; padding: 0; }
+  body, html { width: 100%; height: 100%; margin: 0; padding: 0; background: #FFFFFF; }
 `
 
 const styles = StyleSheet.create({
@@ -267,7 +419,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     borderRadius: BorderRadius.sm,
     overflow: 'hidden',
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.surface,
   },
   canvasActions: {
     flexDirection: 'row',

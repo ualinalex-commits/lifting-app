@@ -6,13 +6,13 @@ import {
 } from 'react-native'
 import { useRouter, useFocusEffect } from 'expo-router'
 import * as DocumentPicker from 'expo-document-picker'
-import { WebView } from 'react-native-webview'
+const WebView = Platform.OS !== 'web' ? require('react-native-webview').WebView : null
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
-import { callExtractDocxText } from '@/lib/api'
+import { callExtractDocxText, callGenerateSignOff } from '@/lib/api'
 
 interface ActiveTalk {
   id: string
@@ -20,7 +20,7 @@ interface ActiveTalk {
   content_type: 'pdf' | 'docx' | 'text'
   content_text: string | null
   pdf_url: string | null
-  status: 'active' | 'archived'
+  status: 'active' | 'archived' | 'deleted'
   created_at: string
   creator: { full_name: string } | null
 }
@@ -115,6 +115,8 @@ export default function ToolboxTalkHome() {
   const [fileSignedUrl, setFileSignedUrl] = useState<string | null>(null)
   const [hasScrolledToBottom, setHasScrolledToBottom] = useState(false)
   const [isRecordingRead, setIsRecordingRead] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [isGenerating, setIsGenerating] = useState(false)
 
   const canManage = role === 'appointed_person' || role === 'crane_supervisor'
 
@@ -189,6 +191,82 @@ export default function ToolboxTalkHome() {
       setHasScrolledToBottom(true)
       recordRead()
     }
+  }
+
+  async function handleDelete() {
+    if (!activeTalk) return
+
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Delete this toolbox talk? The library entry will remain.')
+      : await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Delete Toolbox Talk',
+            'This will remove the active talk from the site. The library entry will remain.',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Delete', style: 'destructive', onPress: () => resolve(true) },
+            ],
+          )
+        })
+
+    if (!confirmed) return
+
+    console.log('DELETE: attempting for talk', activeTalk.id)
+    setIsDeleting(true)
+
+    const { data, error } = await supabase
+      .from('toolbox_talks')
+      .update({ status: 'deleted' })
+      .eq('id', activeTalk.id)
+      .select()
+
+    console.log('DELETE result:', { data, error })
+    setIsDeleting(false)
+
+    if (error) {
+      console.error('DELETE ERROR:', error)
+      Alert.alert('Delete Failed', `${error.message} (code: ${error.code})`)
+      return
+    }
+
+    if (!data || data.length === 0) {
+      console.error('DELETE returned no rows — likely RLS blocking')
+      Alert.alert(
+        'Delete Failed',
+        'No rows were updated. Check that you have permission to update this talk (RLS policy).',
+      )
+      return
+    }
+
+    console.log('DELETE: success, clearing local state')
+    setActiveTalk(null)
+    setMyRead(null)
+    setMySig(null)
+    setFileSignedUrl(null)
+    await fetchActiveTalk()
+  }
+
+  async function handleGenerateSignOff() {
+    if (!activeTalk) return
+    Alert.alert(
+      'Generate Sign-Off',
+      'Generate sign-off page and archive this toolbox talk? Once archived it cannot be edited or signed by anyone else.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Generate',
+          onPress: async () => {
+            setIsGenerating(true)
+            const { error } = await callGenerateSignOff(activeTalk.id)
+            setIsGenerating(false)
+            if (error) { Alert.alert('Error', error); return }
+            Alert.alert('Done', 'Sign-off PDF generated. The talk has been archived.', [
+              { text: 'OK', onPress: () => router.push('/(appointed-person)/toolbox-talk/archive' as any) },
+            ])
+          },
+        },
+      ]
+    )
   }
 
   async function handleUploadFile() {
@@ -354,8 +432,25 @@ export default function ToolboxTalkHome() {
         ) : (
           <View style={styles.docArea}>
             <View style={styles.docHeader}>
-              <Text style={styles.docTitle} numberOfLines={2}>{activeTalk.title}</Text>
-              <Text style={styles.docMeta}>{activeTalk.creator?.full_name ?? '—'}</Text>
+              <View style={styles.docHeaderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.docTitle} numberOfLines={2}>{activeTalk.title}</Text>
+                  <Text style={styles.docMeta}>{activeTalk.creator?.full_name ?? '—'}</Text>
+                </View>
+                {canManage && (
+                  <TouchableOpacity
+                    style={styles.deleteBtn}
+                    onPress={handleDelete}
+                    disabled={isDeleting}
+                    activeOpacity={0.8}
+                  >
+                    {isDeleting
+                      ? <ActivityIndicator size="small" color={Colors.danger} />
+                      : <Text style={styles.deleteBtnText}>Delete</Text>
+                    }
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
 
             {/* DOCX — extracted text */}
@@ -384,26 +479,25 @@ export default function ToolboxTalkHome() {
               <View style={styles.docContent}>
                 {fileSignedUrl ? (
                   <>
-                    <WebView
-                      source={{ uri: fileSignedUrl }}
-                      style={styles.pdfViewer}
-                      nestedScrollEnabled={true}
-                      startInLoadingState={true}
-                      renderLoading={() => (
-                        <ActivityIndicator
-                          color={Colors.primary}
-                          style={StyleSheet.absoluteFillObject}
-                        />
-                      )}
-                    />
-                    {!myRead && (
-                      <TouchableOpacity
-                        style={styles.markReadBtn}
-                        onPress={() => { setHasScrolledToBottom(true); recordRead() }}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.markReadText}>Mark as Read</Text>
-                      </TouchableOpacity>
+                    {Platform.OS === 'web' ? (
+                      <iframe
+                        src={fileSignedUrl}
+                        style={{ width: '100%', height: 480, border: 'none', borderRadius: 8 }}
+                        title="Toolbox Talk Document"
+                      />
+                    ) : (
+                      <WebView
+                        source={{ uri: fileSignedUrl }}
+                        style={styles.pdfViewer}
+                        nestedScrollEnabled={true}
+                        startInLoadingState={true}
+                        renderLoading={() => (
+                          <ActivityIndicator
+                            color={Colors.primary}
+                            style={StyleSheet.absoluteFillObject}
+                          />
+                        )}
+                      />
                     )}
                   </>
                 ) : (
@@ -416,7 +510,10 @@ export default function ToolboxTalkHome() {
             {fileSignedUrl && (
               <TouchableOpacity
                 style={styles.openFileRow}
-                onPress={() => Linking.openURL(fileSignedUrl)}
+                onPress={() => {
+                  Linking.openURL(fileSignedUrl)
+                  if (activeTalk.content_type === 'pdf' && !myRead) recordRead()
+                }}
                 activeOpacity={0.8}
               >
                 <Text style={styles.openFileText}>
@@ -441,6 +538,12 @@ export default function ToolboxTalkHome() {
           {mySig ? (
             <View style={styles.signedBadge}>
               <Text style={styles.signedBadgeText}>Signed ✓</Text>
+            </View>
+          ) : !myRead ? (
+            <View style={styles.readGateMsg}>
+              <Text style={styles.readGateMsgText}>
+                Please read the entire document before signing. Scroll to the bottom of the embedded document, or tap View as PDF to open the full file.
+              </Text>
             </View>
           ) : (
             <TouchableOpacity
@@ -548,15 +651,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: Colors.background,
   },
-  markReadBtn: {
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
-    borderRadius: BorderRadius.sm,
-    paddingVertical: Spacing.sm,
-    alignItems: 'center',
-    marginTop: Spacing.md,
-  },
-  markReadText: { color: Colors.primary, fontWeight: '600', fontSize: FontSize.sm },
   openFileRow: {
     paddingHorizontal: Spacing.md,
     paddingBottom: Spacing.sm,
@@ -603,5 +697,35 @@ const styles = StyleSheet.create({
     color: Colors.success,
     fontWeight: '700',
     fontSize: FontSize.base,
+  },
+  readGateMsg: {
+    backgroundColor: Colors.warning + '15',
+    borderRadius: BorderRadius.sm,
+    padding: Spacing.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.warning,
+  },
+  readGateMsgText: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+  },
+  docHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+  },
+  deleteBtn: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: Colors.danger + '60',
+    justifyContent: 'center',
+  },
+  deleteBtnText: {
+    fontSize: FontSize.xs,
+    color: Colors.danger,
+    fontWeight: '600',
   },
 })

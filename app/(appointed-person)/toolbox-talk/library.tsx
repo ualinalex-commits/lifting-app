@@ -43,7 +43,8 @@ function badgeLabel(ct: ContentType) {
 
 export default function ToolboxTalkLibrary() {
   const router = useRouter()
-  const { profile } = useAuth()
+  const { profile, role } = useAuth()
+  const canManage = role === 'appointed_person' || role === 'crane_supervisor'
   const [talks, setTalks] = useState<LibraryTalk[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [fetchError, setFetchError] = useState<string | null>(null)
@@ -169,9 +170,11 @@ export default function ToolboxTalkLibrary() {
                     : <Text style={styles.useBtnText}>Use This Talk</Text>
                   }
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => handleArchive(item)} activeOpacity={0.8}>
-                  <Text style={styles.archiveText}>Archive</Text>
-                </TouchableOpacity>
+                {canManage && (
+                  <TouchableOpacity onPress={() => handleArchive(item)} activeOpacity={0.8}>
+                    <Text style={styles.archiveText}>Archive</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
           )}
