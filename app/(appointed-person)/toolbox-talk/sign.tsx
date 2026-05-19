@@ -60,6 +60,42 @@ function decodeBase64(base64: string): Uint8Array {
   return new Uint8Array(result)
 }
 
+// Required Supabase Storage bucket: toolbox-talk-signatures (private)
+// Allowed MIME types: image/png
+// Create in Supabase Dashboard > Storage > New bucket if missing
+function dataURItoBlob(dataURI: string): Blob {
+  const [header, base64] = dataURI.split(',')
+  const mimeMatch = header.match(/data:([^;]+);base64/)
+  const mime = mimeMatch ? mimeMatch[1] : 'image/png'
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return new Blob([bytes], { type: mime })
+}
+
+async function uploadSignatureToStorage(
+  base64DataUri: string,
+  talkId: string,
+  userId: string,
+): Promise<string> {
+  const blob = dataURItoBlob(base64DataUri)
+  const path = `${talkId}/${userId}.png`
+
+  const { error } = await supabase.storage
+    .from('toolbox-talk-signatures')
+    .upload(path, blob, {
+      contentType: 'image/png',
+      upsert: true,
+    })
+
+  if (error) {
+    console.error('SIGNATURE UPLOAD ERROR:', error)
+    throw new Error(`Signature upload failed: ${error.message}`)
+  }
+
+  return path
+}
+
 function WebSignatureCanvas({ onSave, onClear }: {
   onSave: (base64: string) => void
   onClear: () => void
@@ -75,7 +111,7 @@ function WebSignatureCanvas({ onSave, onClear }: {
     ctx.fillStyle = '#FFFFFF'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
     ctx.strokeStyle = '#000000'
-    ctx.lineWidth = 2.5
+    ctx.lineWidth = 3
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
   }, [])
@@ -94,7 +130,7 @@ function WebSignatureCanvas({ onSave, onClear }: {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.strokeStyle = '#000000'
-    ctx.lineWidth = 2.5
+    ctx.lineWidth = 3
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     const pos = getPos(e, canvas)
@@ -156,12 +192,13 @@ function WebSignatureCanvas({ onSave, onClear }: {
         onTouchMove={draw}
         onTouchEnd={endDraw}
         style={{
-          border: '1.5px solid #ccc',
+          border: '1.5px solid #cccccc',
           borderRadius: 8,
           touchAction: 'none',
           cursor: 'crosshair',
-          backgroundColor: '#fff',
+          backgroundColor: '#FFFFFF',
           width: '100%',
+          display: 'block',
         } as any}
       />
       <button
@@ -265,9 +302,11 @@ export default function SignTalk() {
       return
     }
 
-    Alert.alert('Signed', 'Your signature has been recorded.', [
-      { text: 'OK', onPress: () => router.back() },
-    ])
+    Alert.alert(
+      'Thank You',
+      'Thank you for signing the toolbox talk.',
+      [{ text: 'OK', onPress: () => router.replace('/(appointed-person)/toolbox-talk/' as any) }],
+    )
   }
 
   function handleClear() {
@@ -278,13 +317,49 @@ export default function SignTalk() {
     setSignatureBase64(null)
   }
 
-  function handleSubmitSignature() {
+  async function handleSubmitSignature() {
     if (Platform.OS === 'web') {
       if (!signatureBase64) {
         Alert.alert('No signature', 'Please draw your signature first.')
         return
       }
-      handleConfirm(signatureBase64)
+      console.log('SIGNATURE: submitting, base64 length:', signatureBase64.length)
+      try {
+        setIsSubmitting(true)
+        const path = await uploadSignatureToStorage(signatureBase64, talk_id, profile!.id)
+        console.log('SIGNATURE: uploaded to', path)
+
+        const { error: insertError } = await supabase
+          .from('toolbox_talk_signatures')
+          .insert({
+            talk_id,
+            user_id: profile!.id,
+            full_name: profile!.full_name,
+            role: role!,
+            company,
+            signature_image_url: path,
+          })
+
+        if (insertError) {
+          if (insertError.code === '23505') {
+            Alert.alert('Already Signed', 'You have already signed this talk.')
+            router.back()
+            return
+          }
+          throw new Error(insertError.message)
+        }
+
+        Alert.alert(
+          'Thank You',
+          'Thank you for signing the toolbox talk.',
+          [{ text: 'OK', onPress: () => router.replace('/(appointed-person)/toolbox-talk/' as any) }],
+        )
+      } catch (err: any) {
+        console.error('SIGNATURE SUBMIT FAILED:', err)
+        Alert.alert('Signature failed', err.message ?? 'Unknown error')
+      } finally {
+        setIsSubmitting(false)
+      }
     } else {
       if (!hasDrawn) {
         Alert.alert('No signature', 'Please draw your signature first.')

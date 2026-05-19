@@ -21,7 +21,9 @@
       "Bash(git stash *)",
       "Skill(supabase:supabase)",
       "Bash(npx tsc *)",
-      "Bash(npx supabase *)"
+      "Bash(npx supabase *)",
+      "Bash(node -e \"require\\('mammoth'\\); console.log\\('mammoth installed'\\)\")",
+      "Bash(npm install *)"
     ]
   }
 }

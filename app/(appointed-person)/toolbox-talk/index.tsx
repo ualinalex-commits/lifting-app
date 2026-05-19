@@ -12,7 +12,8 @@ import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
-import { callExtractDocxText, callGenerateSignOff } from '@/lib/api'
+import { callGenerateSignOff } from '@/lib/api'
+import mammoth from 'mammoth'
 
 interface ActiveTalk {
   id: string
@@ -103,6 +104,24 @@ async function uploadFileToStorage(
   return path
 }
 
+async function extractDocxTextClient(asset: DocumentPicker.DocumentPickerAsset): Promise<string> {
+  let arrayBuffer: ArrayBuffer
+  if (Platform.OS === 'web' && (asset as any).file) {
+    arrayBuffer = await (asset as any).file.arrayBuffer()
+  } else if (asset.uri?.startsWith('data:')) {
+    const base64 = asset.uri.split(',')[1]
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    arrayBuffer = bytes.buffer
+  } else {
+    const res = await fetch(asset.uri)
+    arrayBuffer = await res.arrayBuffer()
+  }
+  const result = await mammoth.extractRawText({ arrayBuffer })
+  return result.value
+}
+
 export default function ToolboxTalkHome() {
   const router = useRouter()
   const { profile, role } = useAuth()
@@ -184,10 +203,11 @@ export default function ToolboxTalkHome() {
   }
 
   function handleScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
-    if (hasScrolledToBottom || !activeTalk) return
-    if (activeTalk.content_type === 'pdf') return
+    if (hasScrolledToBottom || !activeTalk || myRead) return
     const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
-    if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 50) {
+    const reachedBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 50
+    if (reachedBottom) {
+      console.log('READ: scrolled to bottom of embedded document')
       setHasScrolledToBottom(true)
       recordRead()
     }
@@ -291,32 +311,92 @@ export default function ToolboxTalkHome() {
 
       setIsUploading(true)
 
+      // Extract text from Word documents client-side before uploading
+      let extractedText: string | null = null
+      if (contentType === 'docx') {
+        try {
+          extractedText = await extractDocxTextClient(asset)
+          console.log('DOCX TEXT EXTRACTED, length:', extractedText.length)
+        } catch (err: any) {
+          console.error('DOCX EXTRACTION FAILED:', err)
+          Alert.alert('Extraction Failed', `Could not read the Word file: ${err?.message}`)
+          setIsUploading(false)
+          return
+        }
+      }
+
       // 1. Upload to storage
       const filePath = await uploadFileToStorage(asset, mimeType, profile.company_id, asset.name)
 
-      // 2. Create library record
-      const { data: libData, error: libError } = await supabase
+      // 2. Check for duplicate in library (case-insensitive title match)
+      const { data: existing } = await supabase
         .from('toolbox_talk_library')
-        .insert({
-          company_id: profile.company_id,
-          title,
-          content_type: contentType,
-          pdf_url: filePath,
-          created_by: profile.id,
-        })
-        .select('id')
-        .single()
-      if (libError) throw new Error(libError.message)
+        .select('id, title, pdf_url, content_type, content_text')
+        .eq('company_id', profile.company_id)
+        .ilike('title', title)
+        .eq('is_archived', false)
+        .maybeSingle()
+
+      let libraryId: string
+      let talkPdfUrl: string | null
+      let talkContentType: 'pdf' | 'docx'
+
+      if (existing) {
+        const useExisting = Platform.OS === 'web'
+          ? window.confirm(`A toolbox talk titled "${existing.title}" already exists in the library. Use the existing one?`)
+          : await new Promise<boolean>((resolve) => {
+              Alert.alert(
+                'Duplicate Found',
+                `A toolbox talk titled "${existing.title}" already exists in the library. Use the existing one?`,
+                [
+                  { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                  { text: 'Use Existing', onPress: () => resolve(true) },
+                ],
+              )
+            })
+
+        await supabase.storage.from('toolbox-talk-pdfs').remove([filePath])
+
+        if (!useExisting) {
+          setIsUploading(false)
+          return
+        }
+
+        libraryId = existing.id
+        talkPdfUrl = existing.pdf_url
+        talkContentType = existing.content_type as 'pdf' | 'docx'
+        // Carry through any already-extracted text from the library entry
+        if (existing.content_text) extractedText = existing.content_text
+      } else {
+        // 2a. Create new library record
+        const { data: libData, error: libError } = await supabase
+          .from('toolbox_talk_library')
+          .insert({
+            company_id: profile.company_id,
+            title,
+            content_type: contentType,
+            content_text: extractedText,
+            pdf_url: filePath,
+            created_by: profile.id,
+          })
+          .select('id')
+          .single()
+        if (libError) throw new Error(libError.message)
+        libraryId = libData.id
+        talkPdfUrl = filePath
+        talkContentType = contentType
+      }
 
       // 3. Create site talk record
       const { data: talkData, error: talkError } = await supabase
         .from('toolbox_talks')
         .insert({
           site_id: profile.site_id,
-          library_id: libData.id,
+          library_id: libraryId,
           title,
-          content_type: contentType,
-          pdf_url: filePath,
+          content_type: talkContentType,
+          content_text: extractedText,
+          pdf_url: talkPdfUrl,
           created_by: profile.id,
           status: 'active',
         })
@@ -324,17 +404,15 @@ export default function ToolboxTalkHome() {
         .single()
       if (talkError) throw new Error(talkError.message)
 
-      // 4. For docx: extract text in background (non-blocking)
-      if (contentType === 'docx') {
-        callExtractDocxText(talkData.id, filePath)
-      }
-
       setIsUploading(false)
       fetchActiveTalk()
     } catch (err: any) {
       setIsUploading(false)
-      console.error('UPLOAD FAILED AT STEP:', err)
-      Alert.alert('Upload Error', JSON.stringify(err?.message ?? err))
+      console.error('UPLOAD/EXTRACT ERROR:', err)
+      Alert.alert(
+        'Upload Error',
+        err?.message ?? 'Failed to upload. Make sure the extract-docx-text Edge Function is deployed.'
+      )
     }
   }
 
@@ -360,7 +438,7 @@ export default function ToolboxTalkHome() {
           { paddingBottom: activeTalk && !isLoading ? 90 : Spacing.xxl },
         ]}
         onScroll={handleScroll}
-        scrollEventThrottle={200}
+        scrollEventThrottle={100}
       >
         {/* Action buttons */}
         <View style={styles.buttonGrid}>
@@ -460,15 +538,9 @@ export default function ToolboxTalkHome() {
                   <Text style={styles.docText}>{activeTalk.content_text}</Text>
                 ) : (
                   <View style={styles.extractingState}>
-                    <ActivityIndicator color={Colors.primary} />
-                    <Text style={styles.extractingText}>Extracting document text…</Text>
-                    <TouchableOpacity
-                      style={styles.refreshBtn}
-                      onPress={fetchActiveTalk}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={styles.refreshBtnText}>Refresh</Text>
-                    </TouchableOpacity>
+                    <Text style={styles.extractingText}>
+                      Document text not available — tap View as PDF to open the original file.
+                    </Text>
                   </View>
                 )}
               </View>

@@ -122,8 +122,6 @@ The app is **offline-first**. It must function fully without an internet connect
 
 ---
 
----
-
 ## 6. Screens & Navigation
 
 ---
@@ -209,8 +207,6 @@ When adding or editing any user (company_admin, appointed_person, or operative),
 
 ---
 
----
-
 ## 7. Appointed Person — Dashboard & Site Management
 
 ---
@@ -229,8 +225,6 @@ Visible sections on the dashboard:
   - LOLER Register
   - Supervisor Checks
   - Operator Checks
-
-> **Note:** Crane Logs and Crane Schedule are the first screens to be built. The remaining screens are placeholders for now — create the navigation and screen shells but leave them empty.
 
 ---
 
@@ -306,11 +300,313 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 
 ---
 
-*More sections to follow: Crane Schedule, Daily Briefing, Toolbox Talk, LOLER Register, Supervisor Checks, Operator Checks.*
+## 8. Current Build Status
+
+> Last updated: 2026-05-19
+
+| Feature | Status | Detail |
+|---|---|---|
+| **Crane Logs** | Built & Working | Open/close logs, edit while open, filter by crane/status/date/open-closed, analytics screen with subcontractor usage breakdown and date-range filters |
+| **Crane Schedule** | Built & Working | Subcontractor crane booking requests, appointed person approval flow |
+| **Toolbox Talk** | Built & Working | Upload PDF or Word file from device with client-side text extraction (mammoth), auto-saves to company library, embedded inline viewer for PDF (iframe on web, WebView on native) and DOCX (extracted text), scroll-to-bottom or View as PDF marks read, drawn signature (HTML5 canvas on web with black pen on white background, react-native-signature-canvas on native), Attendance modal showing Read + Signed in real time, delete talk and delete library entries (soft-delete via status flags), duplicate library detection, Generate Sign-Off Edge Function appends signatures to original PDF and archives the talk, auto-archive at 18:00 via pg_cron |
+| **Daily Briefing** | Placeholder | Shell screen only — not yet built |
+| **LOLER Register** | Placeholder | Shell screen only — not yet built |
+| **Supervisor Checks** | Placeholder | Shell screen only — not yet built |
+| **Operator Checks** | Placeholder | Shell screen only — not yet built |
 
 ---
 
-## 9. MEWP Inventory Module
+## 9. Toolbox Talk
+
+---
+
+### 9.1 Overview
+
+The Toolbox Talk feature allows `appointed_person` and `crane_supervisor` users to upload a safety briefing document (PDF or Word), display it inline for all site operatives to read, track who has read and signed it, and generate a signed-off archive PDF at the end of the briefing.
+
+Each site has **one active toolbox talk at a time**. Past talks are stored in an archive. The company library retains all documents ever uploaded so they can be reused across sites and dates.
+
+---
+
+### 9.2 Roles & Permissions
+
+| Role | Permissions |
+|---|---|
+| `appointed_person` | Upload talk, delete active talk, view attendance, generate sign-off, access library, access archive |
+| `crane_supervisor` | Upload talk, delete active talk, view attendance, generate sign-off, access library, access archive |
+| `crane_operator` | Read active talk, sign active talk |
+| `slinger_signaller` | Read active talk, sign active talk |
+| `subcontractor_admin` | Read active talk, sign active talk |
+
+---
+
+### 9.3 Screens
+
+| Screen | Path | Description |
+|---|---|---|
+| Home | `/(appointed-person)/toolbox-talk/` | Active talk display, action buttons (Upload, Library, Attendance, Archive), Sign Off button |
+| Sign | `/(appointed-person)/toolbox-talk/sign` | Signature canvas — draw and submit signature |
+| Library | `/(appointed-person)/toolbox-talk/library` | Company-wide talk library, reuse or delete entries |
+| Attendance | `/(appointed-person)/toolbox-talk/attendance` | Live Read + Signed status per operative |
+| Archive | `/(appointed-person)/toolbox-talk/archive` | Past archived talks with sign-off PDF download |
+
+The home screen refreshes on focus via `useFocusEffect` — the Signed ✓ badge and Sign Off button always reflect the latest state when navigating back from the sign screen.
+
+---
+
+### 9.4 Upload Flow
+
+1. User picks a PDF or DOCX file via `DocumentPicker.getDocumentAsync`.
+2. **For DOCX only:** text is extracted client-side using the `mammoth` library **before** the file is uploaded to Storage. If extraction fails, an alert is shown and the upload is aborted — never silently swallowed.
+3. File is uploaded to the `toolbox-talk-pdfs` Storage bucket under `library/{companyId}/{timestamp}_{filename}.{ext}`.
+4. The system checks `toolbox_talk_library` for an existing record with the same title (case-insensitive) in the same company.
+5. **Duplicate found:** prompt the user to use the existing library entry or cancel. If cancelled, the just-uploaded file is deleted from Storage to prevent orphans.
+6. **No duplicate:** a new `toolbox_talk_library` record is inserted with `content_text` populated (for DOCX) and `pdf_url` pointing to the storage path.
+7. A `toolbox_talks` record is inserted with `content_text`, `pdf_url`, `library_id`, and `status = 'active'`.
+8. The home screen reloads and displays the new talk immediately — `content_text` is already present so no further extraction step is needed.
+
+---
+
+### 9.5 Document Viewer
+
+**Platform-specific rendering:**
+
+- **Web — PDF:** rendered via `<iframe src={signedUrl} />` at 480px height.
+- **Web — DOCX:** extracted plain text rendered in a `<ScrollView>` as a `<Text>` block.
+- **Native — PDF:** rendered via `react-native-webview` at 480px height with `nestedScrollEnabled`.
+- **Native — DOCX:** extracted plain text rendered in a `<ScrollView>` as a `<Text>` block.
+
+**DOCX text extraction:**
+
+DOCX text is extracted client-side using the `mammoth` library at upload time and stored directly in the `content_text` column. No Edge Function call is required for text extraction. The extraction handles three asset formats:
+
+- Web `File` object (`asset.file.arrayBuffer()`)
+- Base64 data URI (`asset.uri` starts with `data:`)
+- Native file URI (fetched via `fetch(asset.uri).arrayBuffer()`)
+
+If a legacy `toolbox_talks` record has `content_type = 'docx'` but `content_text` is null, the viewer shows: *"Document text not available — tap View as PDF to open the original file."* — never an infinite spinner.
+
+**Read tracking:**
+
+Read is recorded (`toolbox_talk_reads` INSERT) when either:
+- The `ScrollView` containing the talk content is scrolled to within 50px of the bottom, OR
+- The user taps "View as PDF ↗" (opens via `Linking.openURL`).
+
+Once recorded, `myRead` state is set locally and the read banner + Sign Off button appear immediately without waiting for a page reload.
+
+---
+
+### 9.6 Signing
+
+**Web — HTML5 canvas:**
+- Custom `<canvas>` element with mouse and touch event handlers.
+- Pen colour `#000000`, canvas background `#FFFFFF`.
+- `destination-over` composite operation on `mouseup`/`touchend` to bake a white background under strokes before export.
+- Exported as base64 PNG via `canvas.toDataURL('image/png')`.
+- The `onSave` callback fires on every stroke end, keeping `signatureBase64` state current.
+
+**Native — react-native-signature-canvas:**
+- `react-native-signature-canvas` component with matching black-on-white CSS injected via `webStyle`.
+- `onOK` callback receives the base64 PNG and immediately calls `handleConfirm`.
+
+**Storage upload:**
+- Base64 data URI is converted to a `Blob` (`dataURItoBlob`) before passing to Supabase Storage.
+- Uploaded to `toolbox-talk-signatures` bucket at path `{talkId}/{userId}.png`.
+- Uses `upsert: true` to allow a user to re-sign if needed.
+
+**After successful signature:**
+- A `toolbox_talk_signatures` row is inserted (unique on `(talk_id, user_id)`).
+- If the insert returns a `23505` (unique violation), "Already Signed" is shown and the user is navigated back.
+- On success: `Alert.alert('Thank You', 'Thank you for signing the toolbox talk.')` is shown, and on OK the user is sent to the Toolbox Talk home screen via `router.replace('/(appointed-person)/toolbox-talk/')`.
+- `router.replace` is used (not `router.back`) so the user cannot navigate back to the sign screen.
+
+---
+
+### 9.7 Attendance
+
+Accessible from the home screen via the **Attendance** button (only visible to `appointed_person` and `crane_supervisor`). Requires an active talk to be present — if no active talk exists, an alert is shown.
+
+The attendance screen receives `talk_id` as a query parameter and displays a live list of all operatives on the site, each showing:
+- **Name** and **role**
+- **Read** — whether a `toolbox_talk_reads` row exists for this user and talk
+- **Signed** — whether a `toolbox_talk_signatures` row exists for this user and talk
+
+The list refreshes in real time via a Supabase realtime subscription (or polling on platforms that do not support realtime).
+
+---
+
+### 9.8 Sign-Off Page
+
+The **Generate Sign-Off** button (visible to `appointed_person` and `crane_supervisor` when an active talk exists) calls the `generate-signoff` Supabase Edge Function via `callGenerateSignOff(talkId)` in `lib/api.ts`.
+
+The Edge Function:
+1. Fetches all `toolbox_talk_signatures` for the talk, including full_name, role, company, and signature image.
+2. Loads the original PDF from `toolbox-talk-pdfs` Storage.
+3. Uses `pdf-lib` to compose a sign-off page listing all signatories with their drawn signature images appended to the original PDF.
+4. Uploads the combined PDF back to `toolbox-talk-pdfs` under a new path.
+5. Sets `toolbox_talks.status = 'archived'` and stores the sign-off PDF URL.
+
+**Deployment notes:**
+- The Edge Function must be manually deployed: `supabase functions deploy generate-signoff`.
+- CORS headers are required on the Edge Function response for web client invocation (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Headers: authorization, content-type`).
+- The function is invoked via `supabase.functions.invoke('generate-signoff', { body: { talk_id } })` with the user's session token in the `Authorization` header.
+
+After generation, the user is navigated to the Archive screen to view the completed sign-off PDF.
+
+---
+
+### 9.9 Library
+
+The Library screen (`/toolbox-talk/library`) shows all non-archived entries in `toolbox_talk_library` for the user's company, ordered by most recent first.
+
+Each entry shows: title, content type badge (PDF / DOCX / Text), creator name, and creation date.
+
+**Use This Talk:** inserts a new `toolbox_talks` record for the current site linked to the library entry, carrying through `content_text`, `content_type`, and `pdf_url`. Navigates back to the home screen, which reloads and shows the new active talk.
+
+**Delete:** sets `toolbox_talk_library.is_archived = true` — the library entry disappears from the list but existing `toolbox_talks` records that reference it are not affected.
+
+`content_text` is selected from `toolbox_talk_library` and passed to the `toolbox_talks` insert so DOCX text is immediately available without any extraction step.
+
+---
+
+### 9.10 Database Schema
+
+#### `toolbox_talk_library`
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| company_id | uuid FK → companies | |
+| title | text | |
+| content_type | text | CHECK IN ('pdf', 'docx', 'text') |
+| content_text | text | Extracted plain text — populated for DOCX at upload time via mammoth |
+| pdf_url | text | Storage path in `toolbox-talk-pdfs` bucket |
+| is_archived | boolean | default false |
+| created_by | uuid FK → profiles | |
+| created_at | timestamptz | default now() |
+
+#### `toolbox_talks`
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| site_id | uuid FK → sites | |
+| library_id | uuid FK → toolbox_talk_library | |
+| title | text | |
+| content_type | text | CHECK IN ('pdf', 'docx', 'text') |
+| content_text | text | Populated for DOCX at creation — never null-then-patched |
+| pdf_url | text | Storage path in `toolbox-talk-pdfs` bucket |
+| status | text | CHECK IN ('active', 'archived', 'deleted') |
+| created_by | uuid FK → profiles | |
+| created_at | timestamptz | default now() |
+
+> **Status values:** `active` = currently live on site; `archived` = sign-off generated, read-only; `deleted` = soft-deleted by appointed person or supervisor (was previously `CHECK IN ('active', 'archived')` — `'deleted'` was added to support the Delete Talk action without hard-deleting).
+
+#### `toolbox_talk_reads`
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| talk_id | uuid FK → toolbox_talks | |
+| user_id | uuid FK → profiles | |
+| read_at | timestamptz | default now() |
+
+**UNIQUE constraint:** `(talk_id, user_id)` — one read record per user per talk.
+
+#### `toolbox_talk_signatures`
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| talk_id | uuid FK → toolbox_talks | |
+| user_id | uuid FK → profiles | |
+| full_name | text | Denormalised from profiles at sign time |
+| role | text | Denormalised from auth context at sign time |
+| company | text | Company or subcontractor name at sign time |
+| signature_image_url | text | Storage path in `toolbox-talk-signatures` bucket |
+| signed_at | timestamptz | default now() |
+
+**UNIQUE constraint:** `(talk_id, user_id)` — one signature record per user per talk.
+
+---
+
+### 9.11 WatermelonDB Models
+
+No WatermelonDB model changes are required for the Toolbox Talk feature. The existing models match the schema including the new `'deleted'` status enum value — WatermelonDB stores status as a plain string field with no enum constraint at the model layer.
+
+---
+
+### 9.12 Auto-Archive
+
+A `pg_cron` job runs daily at 18:00 (site local time, configured as UTC equivalent) and sets `status = 'archived'` on any `toolbox_talks` records that are still `'active'` and were created before today. This ensures talks do not remain active indefinitely if the appointed person forgets to generate sign-off.
+
+The `pg_cron` extension must be enabled in **Database → Extensions** in the Supabase Dashboard before this job can be created.
+
+---
+
+### 9.13 Delete and Duplicate Handling
+
+#### Delete Active Talk
+
+- `appointed_person` and `crane_supervisor` can delete the active talk on their site via the **Delete** button on the home screen.
+- Sets `toolbox_talks.status = 'deleted'` — never a hard delete.
+- The library entry referenced by `library_id` is **not** affected.
+- A confirmation prompt is shown before deletion (native: `Alert.alert`; web: `window.confirm`).
+- If the Supabase UPDATE returns zero rows, an error alert is shown explaining the likely RLS block.
+
+#### Delete Library Talk
+
+- `appointed_person` and `crane_supervisor` can delete a library entry from the Library screen.
+- Sets `toolbox_talk_library.is_archived = true` — never a hard delete.
+- Existing `toolbox_talks` records that reference the library entry remain fully functional and unaffected.
+
+#### Duplicate Prevention
+
+- On upload, before inserting a new library record, the system queries `toolbox_talk_library` for any non-archived entry with the same title (case-insensitive via `.ilike`) in the same company.
+- **Duplicate found:** the user is prompted — "A toolbox talk titled 'X' already exists in the library. Use the existing one?"
+  - **Yes:** the just-uploaded file is deleted from Storage via `supabase.storage.remove([filePath])` to avoid orphans. The new site talk is linked to the existing library record using its `pdf_url`, `content_type`, and `content_text`.
+  - **No / Cancel:** the just-uploaded file is deleted from Storage and the upload is fully aborted.
+- **No duplicate:** the upload proceeds normally.
+
+---
+
+### 9.14 Required Supabase Setup
+
+The following must be configured in the Supabase Dashboard **before** the Toolbox Talk feature will work. None of these are applied automatically.
+
+#### Storage Buckets
+Create two **private** buckets:
+
+| Bucket | Size limit | Allowed MIME types |
+|---|---|---|
+| `toolbox-talk-pdfs` | 50 MB | `application/pdf`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` |
+| `toolbox-talk-signatures` | 5 MB | `image/png`, `image/jpeg` |
+
+#### Storage RLS Policies
+For both buckets, add policies allowing:
+- **INSERT:** `authenticated` role
+- **UPDATE:** `authenticated` role
+- **SELECT:** `authenticated` role (or public if signed URLs are sufficient)
+
+#### Database Tables
+Run `supabase/toolbox_talk_schema.sql` to create all four tables with their constraints and indexes.
+
+#### Table RLS Policies
+RLS policies are applied as part of the schema SQL. Key rules:
+- `toolbox_talk_library`: authenticated SELECT and INSERT; UPDATE/DELETE restricted to the `created_by` user or roles with site management permissions.
+- `toolbox_talks`: SELECT for all authenticated users on the same site; INSERT/UPDATE for `appointed_person` and `crane_supervisor` on the site; INSERT for reads and signatures by any authenticated user on the site.
+- `toolbox_talk_reads`: authenticated INSERT (own user only); SELECT for managers on the site.
+- `toolbox_talk_signatures`: authenticated INSERT (own user only, enforced by unique constraint); SELECT for managers on the site.
+
+#### Edge Function Deployment
+Deploy the sign-off generator:
+```
+supabase functions deploy generate-signoff
+```
+The function requires `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` environment variables set in the Supabase Dashboard → Edge Functions → Secrets.
+
+#### pg_cron Extension
+Enable in **Database → Extensions** to activate the 18:00 auto-archive job.
+
+---
+
+## 10. MEWP Inventory Module
 
 The MEWP module is built **inside the Lifting App** as native screens using Expo Router.
 It shares the same Supabase project, auth system, and existing tables (sites, subcontractors, profiles).
@@ -320,59 +616,88 @@ MEWP = Mobile Elevated Work Platform (Pecolift, Scissor Lift, Boom Lift, Cherry 
 
 ---
 
-### 9.1 What It Does (Phase 1 — Inventory)
+### 10.1 Architecture
 
-A site inventory system for tracking all MEWPs on a construction site — their type, serial number,
-subcontractor, thorough examination certificate status, location, and compliance status.
+The MEWP module is built **inside the Lifting App** as native screens using Expo Router.
+It is NOT a separate Next.js project.
 
-Phase 1 is inventory only. Daily checks, spot checks and PDF generation come later.
+- Runs natively on iOS and Android
+- Runs on web via Expo's web support
+- `mewps.liftingmanagement.com` points to the MEWP screens in the deployed web version
+- PDF generation runs via a **Supabase Edge Function** (not a Next.js API route)
+- All MEWP screens live under `app/(mewp)/` in the Expo project
+- Public inspection pages (`/check/[mewpId]`) require no login — accessible to anyone with the URL or NFC/QR scan
+- All admin/dashboard screens use the same email OTP auth as the rest of the app
+
+**Additional dependencies:**
+```
+npm install pdf-lib signature_pad qrcode mammoth
+```
+
+> **Auth note:** ALL authentication uses email OTP only (6-digit PIN, 10 minutes).
+> Worker inspection and spot check pages remain fully public — no login required.
 
 ---
 
-### 9.2 Roles & Permissions
+### 10.2 Roles & Permissions
 
-| Role | Can Do |
+```
+main_admin
+└── site_admin (per site)
+    ├── manages site MEWPs
+    └── subcontractor_admin (per subcontractor on site)
+        └── manages their own MEWPs on site
+```
+
+| Role | Scope | Responsibilities |
+|---|---|---|
+| `main_admin` | Global | Adds sites, adds site_admins |
+| `site_admin` (`appointed_person`) | Single site | Adds/edits/archives MEWPs, adds subcontractor_admins, views all site MEWPs, does spot checks from web |
+| `subcontractor_admin` | Single site | Adds/removes their own MEWPs, does daily checks and spot checks on their MEWPs |
+| Public (no login) | Single MEWP | Views check history, thorough examination, does daily check and spot check via QR/NFC scan |
+
+> In the MEWP module, `appointed_person` acts as `site_admin`. The shared `profiles` table role field determines access.
+
+---
+
+### 10.3 MEWP Lifecycle & Fields
+
+```
+Subcontractor delivers MEWP
+        ↓
+subcontractor_admin adds MEWP to site
+        ↓
+QR code / NFC tag attached to MEWP
+        ↓
+Daily checks done by operators (public, via QR/NFC scan)
+        ↓
+Spot checks done by anyone (public QR/NFC or web by site_admin/subcontractor_admin)
+        ↓
+Subcontractor collects MEWP → subcontractor_admin removes it from site
+```
+
+| Field | Required |
 |---|---|
-| `appointed_person` | Add/edit/archive any MEWP on their site, upload thorough exam, update location |
-| `subcontractor_admin` | Add/edit/archive their own subcontractor's MEWPs only, upload thorough exam, update location |
-| All other site roles | View inventory only |
+| MEWP ID / reference | Yes |
+| Type (scissor, boom, cherry picker etc.) | Yes |
+| Subcontractor (owner) | Yes |
+| Thorough examination document (photo or PDF) | Yes |
+| Thorough examination expiry date | Yes |
+| QR code / NFC reference | Auto-generated |
+
+- Added by `subcontractor_admin` for their own MEWPs, or by `site_admin` for site-owned MEWPs.
+- Removed from site by `subcontractor_admin` when collected — not permanently deleted, marked as off-site.
+- `site_admin` can archive any MEWP.
 
 ---
 
-### 9.3 Data Model
+### 10.4 Thorough Examination & Status Logic
 
-Uses existing tables: `sites`, `subcontractors`, `profiles`. New tables:
+- Uploaded as a **photo or PDF document** by `site_admin` or `subcontractor_admin`.
+- Has an **expiry date** set manually at time of upload.
+- Visible publicly on the MEWP public page (anyone who scans the QR/NFC can see it).
 
-#### `mewps`
-| column | type | notes |
-|---|---|---|
-| id | uuid PK | gen_random_uuid() |
-| site_id | uuid FK → sites | |
-| subcontractor_id | uuid FK → subcontractors | nullable — null if site-owned |
-| mewp_type | text | e.g. Pecolift, Scissor Lift |
-| serial_number | text | |
-| thorough_exam_url | text | public URL of uploaded document or photo |
-| thorough_exam_expiry | date | nullable |
-| current_location | text | e.g. Basement, Level 2 |
-| sticker_url | text | public URL of MEWP sticker photo |
-| is_archived | boolean | default false |
-| created_at | timestamptz | default now() |
-| updated_at | timestamptz | default now() |
-
-#### `mewp_location_history`
-| column | type | notes |
-|---|---|---|
-| id | uuid PK | |
-| mewp_id | uuid FK → mewps | |
-| location | text | |
-| changed_at | timestamptz | default now() |
-| changed_by | uuid FK → profiles | |
-
----
-
-### 9.4 Status Logic
-
-Calculated from `thorough_exam_expiry` — never stored, always derived:
+Status is calculated from `thorough_exam_expiry` — never stored, always derived:
 
 - **VALID** — expiry date exists and is more than 30 days from today (green)
 - **EXP SOON** — expiry date exists and is within 30 days from today (amber)
@@ -380,9 +705,9 @@ Calculated from `thorough_exam_expiry` — never stored, always derived:
 
 ---
 
-### 9.5 Screens
+### 10.5 Screens
 
-#### MEWP Inventory Screen (appointed_person dashboard card → this screen)
+#### MEWP Inventory Screen
 
 Design: Glide-style — clean, minimal, flat. White surfaces, 0.5px borders, generous whitespace.
 
@@ -396,99 +721,89 @@ Design: Glide-style — clean, minimal, flat. White surfaces, 0.5px borders, gen
 
 **Table columns:** # / Type / Serial / Subcontractor / Expiry / Location / Status / Actions
 
-**Status badges (pill shaped):**
-- Valid → green pill
-- Exp Soon → amber pill
-- No Cert → red pill
+**Status badges (pill shaped):** Valid → green, Exp Soon → amber, No Cert → red
 
-**Action buttons per row (inline, no detail screen needed):**
-- Upload exam icon button → opens sheet with file/photo picker + date picker for expiry
-- Edit icon button → opens edit form
+**Action buttons per row (inline):**
+- Upload exam icon → opens sheet with file/photo picker + date picker for expiry
+- Edit icon → opens edit form
 
 **Pagination** at bottom for large lists.
 
 #### Add / Edit MEWP Form
 
 Fields:
-- MEWP Type (text input — e.g. Pecolift, Scissor Lift)
-- Serial Number (text input)
-- Subcontractor (dropdown from `subcontractors` table filtered by site_id — shows "None / Site-owned" as first option)
+- MEWP Type (text — e.g. Pecolift, Scissor Lift)
+- Serial Number (text)
+- Subcontractor (dropdown from `subcontractors` filtered by site_id — "None / Site-owned" as first option)
 - Thorough Exam (file/photo picker — optional at creation)
 - Expiry Date (date picker — optional at creation)
-- Current Location (text input)
+- Current Location (text)
 - Sticker Photo (photo picker — optional)
 
-#### MEWP Detail Screen (tap a row → detail)
+#### MEWP Detail Screen
 
 Shows all MEWP fields plus:
-- Location history timeline (list of past locations with date and who changed it)
+- Location history timeline (past locations with date and who changed it)
 - Thorough exam document/photo preview
 - Sticker photo preview
 
 ---
 
-### 9.6 Supabase Storage Buckets
+### 10.6 Daily Check
 
-| Bucket | Path | Writer | Notes |
-|---|---|---|---|
-| `mewp-thorough-exams` | `{siteId}/{mewpId}/{timestamp}.{ext}` | authenticated | PDF, JPG, PNG |
-| `mewp-stickers` | `{siteId}/{mewpId}/sticker.jpg` | authenticated | MEWP sticker photo |
-
-Both buckets: public read, authenticated INSERT.
+- Done by **anyone** — no login required.
+- Triggered by scanning the QR code or NFC tag on the MEWP.
+- One check per MEWP per day.
+- At the end of each week, a **PDF is auto-generated** showing all daily checks for that week and saved to the MEWP archive.
 
 ---
 
-### 9.7 RLS Policies
+### 10.7 Spot Check
 
-- `mewps`: public SELECT, appointed_person ALL for their site, subcontractor_admin INSERT/UPDATE/DELETE for their own subcontractor_id rows
-- `mewp_location_history`: public SELECT, authenticated INSERT
-- Storage buckets: authenticated INSERT, public SELECT
+- Done by **anyone** — no login required via QR/NFC scan, or from web by `site_admin` and `subcontractor_admin`.
+- Can be done at any time (not limited to once per day).
+- Generates a **condition report**.
 
----
+#### Spot Check Form
 
-### 9.8 What Comes After Inventory (Phase 2+)
+| Section | Details |
+|---|---|
+| Checklist | Fixed list of items, each marked **Pass / Fail / N/A** |
+| Notes | Free text — describe any issues found |
+| Photos | One or more photos of condition |
 
-- Daily inspection form (43-item checklist, photo, signature)
-- Spot check form (condition report)
-- QR code / NFC tag per MEWP
-- PDF inventory export (matching the IPAF-style table format)
-- Weekly PDF archive
-- Defect management
+#### Fixed Checklist Items
+- Tyres / Tracks
+- Controls (joysticks, buttons, display)
+- Safety features (harness points, guardrails, emergency stop)
+- Boom / Arm
+- Basket / Platform
+- Hydraulics (visible leaks, damage)
+- Structure (frame, welds, visible damage)
+- Battery / Fuel level
+- Lights and alarms
+- Ground conditions suitability
 
-
-
-- Site admin scans a QR code → opens site dashboard
-- Worker scans NFC tag on machine → opens daily inspection form
-- Worker completes 43-item checklist, takes a photo, signs → data saves to Supabase
-- PDF report generated immediately after each submission and stored in Supabase Storage
-- Weekly PDF archived for compliance records
-
----
-
-### 9.2 Architecture
-
-The MEWP module is built **inside the Lifting App** as native screens using Expo Router.
-It is NOT a separate Next.js project.
-
-- Runs natively on iOS and Android
-- Runs on web via Expo's web support
-- `mewps.liftingmanagement.com` points to the MEWP screens in the deployed web version
-- PDF generation runs via a **Supabase Edge Function** (not a Next.js API route)
-- All MEWP screens live under `app/(mewp)/` in the Expo project
-- Public inspection pages (`/check/[mewpId]`) require no login — accessible to anyone with the URL or NFC/QR scan
-- All admin/dashboard screens use the same email OTP auth as the rest of the app
-
-**Additional dependencies to add to lifting-app:**
-```
-npm install pdf-lib signature_pad qrcode
-```
-
-> **Auth note:** ALL authentication uses email OTP only (6-digit PIN, 10 minutes).
-> Worker inspection and spot check pages remain fully public — no login required.
+#### Spot Check Outcome
+- All Pass → **Satisfactory**
+- Any Fail → **Issues Found** — notes and photos required for each failure
+- A condition report PDF is generated after submission
 
 ---
 
-### 9.3 Screen Structure (inside lifting-app)
+### 10.8 Public MEWP Page (QR/NFC Scan — no login required)
+
+When anyone scans the QR code or NFC tag on a MEWP, they see:
+
+- MEWP ID, type, subcontractor
+- Thorough examination document/photo and expiry date
+- Daily checks history (list of all checks with date and result)
+- **Do Daily Check** button
+- **Do Spot Check** button
+
+---
+
+### 10.9 Screen Structure (inside lifting-app)
 
 ```
 app/
@@ -517,10 +832,9 @@ public/
 
 ---
 
-### 9.4 Supabase Tables (MEWP module)
+### 10.10 Supabase Tables (MEWP module)
 
 These tables are **prefixed with `mewp_`** to avoid collision with Lifting App tables.
-All use the same Supabase project.
 
 #### `mewp_sites`
 | column | type | notes |
@@ -670,7 +984,7 @@ All use the same Supabase project.
 
 ---
 
-### 9.5 Supabase Views & RPCs
+### 10.11 Supabase Views & RPCs
 
 **Views:**
 
@@ -698,7 +1012,7 @@ Uses INSERT ... ON CONFLICT DO NOTHING then SELECT.
 
 ---
 
-### 9.6 Supabase Storage Buckets
+### 10.12 Supabase Storage Buckets
 
 All buckets are **public** (public read).
 
@@ -712,7 +1026,7 @@ All buckets are **public** (public read).
 
 ---
 
-### 9.7 Authentication (MEWP module)
+### 10.13 Authentication (MEWP module)
 
 **Public pages (no login):**
 - `/check/[mewpId]` — worker inspection form, fully public
@@ -725,21 +1039,9 @@ All buckets are **public** (public read).
 **Auth flow:** Same email OTP as the main Lifting App — email → 6-digit PIN → signed in.
 Users are managed via the shared `profiles` table. No separate user table for MEWP.
 
-**Role mapping for MEWP module:**
-
-| Lifting App role | MEWP access |
-|---|---|
-| `main_admin` | Full admin access — all sites, all MEWPs |
-| `company_admin` | No direct MEWP access (future: view reports) |
-| `appointed_person` → `site_admin` | Manages MEWPs on their site |
-| `subcontractor_admin` | Manages their own MEWPs on site |
-
-> Note: In the MEWP module, `appointed_person` acts as `site_admin`.
-> The shared `profiles` table role field determines access.
-
 ---
 
-### 9.8 All 43 Inspection Items
+### 10.14 All 43 Inspection Items
 
 #### Visual Checks (items 1–28, single PASS/FAIL/N/A)
 
@@ -808,9 +1110,9 @@ Users are managed via the shared `profiles` table. No separate user table for ME
 
 ---
 
-### 9.9 Daily Inspection Form
+### 10.15 Daily Inspection Form
 
-File: `/pages/check/[mewpId].jsx`
+File: `app/(mewp)/check/[mewpId].tsx`
 
 **Page states:** `loading | not_found | form | submitting | submit_error | already_done | done`
 
@@ -852,7 +1154,7 @@ if (entryId) await supabase.from("mewp_daily_entries").delete().eq("id", entryId
 
 ---
 
-### 9.10 PDF Generation
+### 10.16 PDF Generation
 
 **Library:** `pdf-lib` v1.17.1 — pure JS, works server-side in API routes.
 
@@ -901,7 +1203,7 @@ await supabase.storage.from("mewp-weekly-reports").upload(filePath, pdfBuffer, {
 
 ---
 
-### 9.11 Critical Workarounds (do not skip)
+### 10.17 Critical Workarounds (do not skip)
 
 **1. Signature captured before state change**
 Read `sigPadRef.current` BEFORE calling `setPageStatus("submitting")` — the state change unmounts the canvas and nulls the ref.
@@ -968,7 +1270,7 @@ function normDay(val) { return val ? DAY_NORM[String(val).toLowerCase()] ?? null
 
 ---
 
-### 9.12 RLS Policy Summary (MEWP tables)
+### 10.18 RLS Policy Summary (MEWP tables)
 
 - `mewp_sites`: public SELECT, service role INSERT/UPDATE
 - `mewp_machines`: public SELECT, service role INSERT/UPDATE
@@ -987,7 +1289,7 @@ function normDay(val) { return val ? DAY_NORM[String(val).toLowerCase()] ?? null
 
 ---
 
-### 9.13 Still To Build
+### 10.19 Still To Build
 
 1. **Weekly Sunday auto-archive** — Supabase Edge Function running at 23:59 every Sunday, calling generateReport for all MEWPs with activity that week
 2. **Defect management** — site admins mark defects as repaired, add engineer name and date
@@ -996,170 +1298,10 @@ function normDay(val) { return val ? DAY_NORM[String(val).toLowerCase()] ?? null
 
 ---
 
-### 9.14 Deployment
+### 10.20 Deployment
 
 - **Host:** Vercel (auto-deploy on push to main)
 - **Subdomain:** `mewps.liftingmanagement.com`
 - **Node version:** 20.x
 - **PDF generation timeout:** can take 5–15 seconds — use Vercel Pro for 300s timeout (Hobby is 10s)
 - Env vars set in Vercel dashboard (not committed to repo)
-
-The MEWP module is a standalone web app deployed at `mewps.liftingmanagement.com`, built as part of the Lifting App ecosystem and sharing the same Supabase project and authentication system.
-
-MEWP = Mobile Elevated Work Platform (cherry pickers, scissor lifts, boom lifts etc.)
-
----
-
-### 8.1 Role Structure
-
-```
-main_admin
-└── site_admin (per site)
-    ├── manages site MEWPs
-    └── subcontractor_admin (per subcontractor on site)
-        └── manages their own MEWPs on site
-```
-
-| Role | Scope | Responsibilities |
-|---|---|---|
-| `main_admin` | Global | Adds sites, adds site_admins |
-| `site_admin` | Single site | Adds/edits/archives MEWPs, adds subcontractor_admins, views all site MEWPs, does spot checks from web |
-| `subcontractor_admin` | Single site | Adds/removes their own MEWPs, does daily checks and spot checks on their MEWPs |
-| Public (no login) | Single MEWP | Views check history, thorough examination, does daily check and spot check via QR/NFC scan |
-
----
-
-### 8.2 MEWP Lifecycle
-
-```
-Subcontractor delivers MEWP
-        ↓
-subcontractor_admin adds MEWP to site
-        ↓
-QR code / NFC tag attached to MEWP
-        ↓
-Daily checks done by operators (public, via QR/NFC scan)
-        ↓
-Spot checks done by anyone (public QR/NFC or web by site_admin/subcontractor_admin)
-        ↓
-Subcontractor collects MEWP → subcontractor_admin removes it from site
-```
-
----
-
-### 8.3 MEWP Fields
-
-| Field | Required |
-|---|---|
-| MEWP ID / reference | Yes |
-| Type (scissor, boom, cherry picker etc.) | Yes |
-| Subcontractor (owner) | Yes |
-| Thorough examination document (photo or PDF) | Yes |
-| Thorough examination expiry date | Yes |
-| QR code / NFC reference | Auto-generated |
-
-- Added by `subcontractor_admin` for their own MEWPs, or by `site_admin` for site-owned MEWPs.
-- Removed from site by `subcontractor_admin` when collected — not permanently deleted, marked as off-site.
-- `site_admin` can archive any MEWP.
-
----
-
-### 8.4 Thorough Examination
-
-- Uploaded as a **photo or PDF document** by `site_admin` or `subcontractor_admin`.
-- Has an **expiry date** set manually at time of upload.
-- Visible publicly on the MEWP public page (anyone who scans the QR/NFC can see it).
-- Status shown on inventory dashboard: **In Date** or **Overdue**.
-
----
-
-### 8.5 Daily Check
-
-- Done by **anyone** — no login required.
-- Triggered by scanning the QR code or NFC tag on the MEWP.
-- Uses the existing daily check form (same as current MEWP app).
-- One check per MEWP per day.
-- At the end of each week, a **PDF is auto-generated** showing all daily checks for that week and saved to the MEWP archive.
-
----
-
-### 8.6 Spot Check
-
-- Done by **anyone** — no login required via QR/NFC scan, or from the web by `site_admin` and `subcontractor_admin`.
-- Can be done at any time (not limited to once per day).
-- Generates a **condition report**.
-
-#### Spot Check Form
-
-| Section | Details |
-|---|---|
-| Checklist | Fixed list of items, each marked **Pass / Fail / N/A** |
-| Notes | Free text — describe any issues found |
-| Photos | One or more photos of condition |
-
-#### Fixed Checklist Items
-- Tyres / Tracks
-- Controls (joysticks, buttons, display)
-- Safety features (harness points, guardrails, emergency stop)
-- Boom / Arm
-- Basket / Platform
-- Hydraulics (visible leaks, damage)
-- Structure (frame, welds, visible damage)
-- Battery / Fuel level
-- Lights and alarms
-- Ground conditions suitability
-
-#### Spot Check Outcome
-- All Pass → **Satisfactory**
-- Any Fail → **Issues Found** — notes and photos required for each failure
-- A condition report PDF is generated after submission
-
----
-
-### 8.7 Public MEWP Page (QR/NFC Scan — no login required)
-
-When anyone scans the QR code or NFC tag on a MEWP, they see:
-
-- MEWP ID, type, subcontractor
-- Thorough examination document/photo and expiry date
-- Daily checks history (list of all checks with date and result)
-- **Do Daily Check** button
-- **Do Spot Check** button
-
----
-
-### 8.8 Inventory Dashboard (site_admin)
-
-The site_admin has a full inventory view of all MEWPs on site:
-
-- Total MEWPs on site
-- Breakdown by subcontractor
-- **In Date** vs **Overdue** thorough examinations
-- Daily check compliance — how many MEWPs checked today vs not checked
-- Spot check history across all MEWPs
-- Weekly PDF archive per MEWP
-
----
-
-### 8.9 Supabase Tables (MEWP module)
-
-Tables to be added to the shared Supabase project:
-
-- `mewp_sites` — site register for MEWP module
-- `mewp_site_admins` — site_admin assignments
-- `mewps` — MEWP register per site
-- `mewp_thorough_examinations` — document/photo + expiry date per MEWP
-- `mewp_daily_checks` — one record per MEWP per day
-- `mewp_spot_checks` — condition report per check
-- `mewp_spot_check_items` — individual checklist item results per spot check
-- `mewp_weekly_pdfs` — archived weekly PDF references per MEWP
-
----
-
-### 8.10 Deployment
-
-- Deployed as a separate web app on Vercel
-- Subdomain: `mewps.liftingmanagement.com`
-- Shares the same Supabase project as the main Lifting App
-- Auth: same email OTP system — logged-in users (site_admin, subcontractor_admin) use the same credentials
-- Public pages (QR/NFC scan) require no authentication

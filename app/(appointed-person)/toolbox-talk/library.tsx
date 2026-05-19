@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import {
   View, Text, FlatList, TouchableOpacity,
-  StyleSheet, Alert, ActivityIndicator,
+  StyleSheet, Alert, ActivityIndicator, Platform,
 } from 'react-native'
 import { useRouter, useFocusEffect } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
@@ -17,6 +17,7 @@ interface LibraryTalk {
   id: string
   title: string
   content_type: ContentType
+  content_text: string | null
   pdf_url: string | null
   is_archived: boolean
   created_at: string
@@ -60,7 +61,7 @@ export default function ToolboxTalkLibrary() {
     setFetchError(null)
     const { data, error } = await supabase
       .from('toolbox_talk_library')
-      .select('id, title, content_type, pdf_url, is_archived, created_at, creator:profiles!created_by(full_name)')
+      .select('id, title, content_type, content_text, pdf_url, is_archived, created_at, creator:profiles!created_by(full_name)')
       .eq('company_id', profile.company_id)
       .eq('is_archived', false)
       .order('created_at', { ascending: false })
@@ -88,6 +89,7 @@ export default function ToolboxTalkLibrary() {
         library_id: libraryTalk.id,
         title: libraryTalk.title,
         content_type: libraryTalk.content_type,
+        content_text: libraryTalk.content_text,
         pdf_url: libraryTalk.pdf_url,
         created_by: profile.id,
         status: 'active',
@@ -100,26 +102,33 @@ export default function ToolboxTalkLibrary() {
     router.back()
   }
 
-  async function handleArchive(talk: LibraryTalk) {
-    Alert.alert(
-      'Archive Library Talk',
-      `Archive "${talk.title}" from the library? It will no longer appear for new talks.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Archive',
-          style: 'destructive',
-          onPress: async () => {
-            const { error } = await supabase
-              .from('toolbox_talk_library')
-              .update({ is_archived: true })
-              .eq('id', talk.id)
-            if (error) { Alert.alert('Error', error.message); return }
-            fetchTalks()
-          },
-        },
-      ]
-    )
+  async function handleDelete(libraryTalkId: string) {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Delete this library talk? It will no longer appear in the library. Existing site talks that reference it will not be affected.')
+      : await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Delete Library Talk',
+            'It will no longer appear in the library. Existing site talks that reference it will not be affected.',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Delete', style: 'destructive', onPress: () => resolve(true) },
+            ],
+          )
+        })
+
+    if (!confirmed) return
+
+    const { error } = await supabase
+      .from('toolbox_talk_library')
+      .update({ is_archived: true })
+      .eq('id', libraryTalkId)
+
+    if (error) {
+      Alert.alert('Delete failed', error.message)
+      return
+    }
+
+    fetchTalks()
   }
 
   return (
@@ -171,8 +180,8 @@ export default function ToolboxTalkLibrary() {
                   }
                 </TouchableOpacity>
                 {canManage && (
-                  <TouchableOpacity onPress={() => handleArchive(item)} activeOpacity={0.8}>
-                    <Text style={styles.archiveText}>Archive</Text>
+                  <TouchableOpacity onPress={() => handleDelete(item.id)} activeOpacity={0.8}>
+                    <Text style={styles.archiveText}>Delete</Text>
                   </TouchableOpacity>
                 )}
               </View>
