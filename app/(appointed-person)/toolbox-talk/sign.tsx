@@ -106,6 +106,9 @@ function WebSignatureCanvas({ onSave, onClear }: {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
+    // Set pixel dimensions from actual rendered size to avoid coordinate offset
+    canvas.width = canvas.offsetWidth || 340
+    canvas.height = canvas.offsetHeight || 200
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.fillStyle = '#FFFFFF'
@@ -182,8 +185,6 @@ function WebSignatureCanvas({ onSave, onClear }: {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 } as any}>
       <canvas
         ref={canvasRef}
-        width={340}
-        height={200}
         onMouseDown={startDraw}
         onMouseMove={draw}
         onMouseUp={endDraw}
@@ -198,6 +199,7 @@ function WebSignatureCanvas({ onSave, onClear }: {
           cursor: 'crosshair',
           backgroundColor: '#FFFFFF',
           width: '100%',
+          height: 200,
           display: 'block',
         } as any}
       />
@@ -257,15 +259,18 @@ export default function SignTalk() {
   }, [profile, role])
 
   async function handleConfirm(sig: string) {
-    if (!profile?.id || !talk_id) return
+    console.log('[SIGN] handleConfirm called (native path), profile.id:', profile?.id, 'talk_id:', talk_id)
+    if (!profile?.id || !talk_id) {
+      console.error('[SIGN] Missing profile.id or talk_id — aborting')
+      return
+    }
 
     const base64Data = sig.replace(/^data:image\/png;base64,/, '')
     const storagePath = `${talk_id}/${profile.id}.png`
 
     setIsSubmitting(true)
+    console.log('[SIGN] Uploading signature to storage path:', storagePath)
 
-    // IMPORTANT: The "toolbox-talk-signatures" bucket must exist in Supabase Storage
-    // (private). Create it in the Supabase Dashboard → Storage → New bucket if absent.
     const { error: uploadError } = await supabase.storage
       .from('toolbox-talk-signatures')
       .upload(storagePath, decodeBase64(base64Data), {
@@ -274,10 +279,13 @@ export default function SignTalk() {
       })
 
     if (uploadError) {
+      console.error('[SIGN] Storage upload error:', uploadError)
       setIsSubmitting(false)
       Alert.alert('Upload Error', uploadError.message)
       return
     }
+
+    console.log('[SIGN] Upload successful, inserting signature record...')
 
     const { error: insertError } = await supabase
       .from('toolbox_talk_signatures')
@@ -293,6 +301,7 @@ export default function SignTalk() {
     setIsSubmitting(false)
 
     if (insertError) {
+      console.error('[SIGN] Insert error:', insertError.code, insertError.message)
       if (insertError.code === '23505') {
         Alert.alert('Already Signed', 'You have already signed this talk.')
         router.back()
@@ -302,6 +311,7 @@ export default function SignTalk() {
       return
     }
 
+    console.log('[SIGN] Signature saved successfully — showing thank-you alert')
     Alert.alert(
       'Thank You',
       'Thank you for signing the toolbox talk.',
@@ -318,17 +328,26 @@ export default function SignTalk() {
   }
 
   async function handleSubmitSignature() {
+    console.log('[SIGN] handleSubmitSignature called, platform:', Platform.OS)
+    console.log('[SIGN] signatureBase64 present:', !!signatureBase64, 'length:', signatureBase64?.length ?? 0)
+    console.log('[SIGN] profile.id:', profile?.id, 'talk_id:', talk_id, 'role:', role, 'company:', company)
+
     if (Platform.OS === 'web') {
       if (!signatureBase64) {
-        Alert.alert('No signature', 'Please draw your signature first.')
+        console.log('[SIGN] No signature drawn — aborting')
+        window.alert('Please draw your signature first.')
         return
       }
-      console.log('SIGNATURE: submitting, base64 length:', signatureBase64.length)
+
+      console.log('[SIGN] Starting web submission...')
       try {
         setIsSubmitting(true)
-        const path = await uploadSignatureToStorage(signatureBase64, talk_id, profile!.id)
-        console.log('SIGNATURE: uploaded to', path)
 
+        console.log('[SIGN] Uploading to storage...')
+        const path = await uploadSignatureToStorage(signatureBase64, talk_id, profile!.id)
+        console.log('[SIGN] Storage upload succeeded, path:', path)
+
+        console.log('[SIGN] Inserting signature record into toolbox_talk_signatures...')
         const { error: insertError } = await supabase
           .from('toolbox_talk_signatures')
           .insert({
@@ -341,22 +360,22 @@ export default function SignTalk() {
           })
 
         if (insertError) {
+          console.error('[SIGN] Insert error:', insertError.code, insertError.message)
           if (insertError.code === '23505') {
-            Alert.alert('Already Signed', 'You have already signed this talk.')
+            window.alert('You have already signed this talk.')
             router.back()
             return
           }
           throw new Error(insertError.message)
         }
 
-        Alert.alert(
-          'Thank You',
-          'Thank you for signing the toolbox talk.',
-          [{ text: 'OK', onPress: () => router.replace('/(appointed-person)/toolbox-talk/' as any) }],
-        )
+        console.log('[SIGN] Signature saved — navigating to toolbox talk home')
+        // window.alert is synchronous on web; navigate directly after it dismisses
+        window.alert('Thank you for signing the toolbox talk.')
+        router.replace('/(appointed-person)/toolbox-talk/' as any)
       } catch (err: any) {
-        console.error('SIGNATURE SUBMIT FAILED:', err)
-        Alert.alert('Signature failed', err.message ?? 'Unknown error')
+        console.error('[SIGN] SUBMIT FAILED:', err)
+        window.alert(`Signature failed: ${err.message ?? 'Unknown error'}`)
       } finally {
         setIsSubmitting(false)
       }
@@ -365,6 +384,7 @@ export default function SignTalk() {
         Alert.alert('No signature', 'Please draw your signature first.')
         return
       }
+      console.log('[SIGN] Calling readSignature() on native SignatureCanvas ref')
       sigRef.current?.readSignature()
     }
   }
@@ -489,7 +509,7 @@ const styles = StyleSheet.create({
   },
   canvasHint: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.sm },
   canvasContainer: {
-    height: 220,
+    height: 200,
     borderWidth: 1.5,
     borderColor: Colors.border,
     borderRadius: BorderRadius.sm,

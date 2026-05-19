@@ -127,6 +127,44 @@ async function processOneTalk(
   })
   y -= 20
 
+  // Attached document reference
+  drawText(page, 'Attached Document', margin, y, 9, true, rgb(0.3, 0.3, 0.3))
+  y -= 14
+  const docTypeLabel = talk.content_type === 'pdf' ? 'PDF'
+    : talk.content_type === 'docx' ? 'Word Document' : 'Document'
+  drawText(page, `${talk.title}  (${docTypeLabel})`, margin + 8, y, 9)
+  y -= 12
+
+  if (talk.pdf_url) {
+    try {
+      const { data: urlData } = await adminClient.storage
+        .from('toolbox-talk-pdfs')
+        .createSignedUrl(talk.pdf_url, 60 * 60 * 24 * 7)
+      if (urlData?.signedUrl) {
+        const url = urlData.signedUrl
+        const maxLen = 95
+        const displayUrl = url.length > maxLen ? url.substring(0, maxLen - 3) + '...' : url
+        drawText(page, displayUrl, margin + 8, y, 6, false, rgb(0.15, 0.35, 0.75))
+        y -= 10
+        drawText(page, '(link valid for 7 days — access permanent copy via the Lifting App library)', margin + 8, y, 6, false, rgb(0.55, 0.55, 0.55))
+        y -= 14
+      }
+    } catch (e) {
+      console.warn(`Could not generate signed URL for document in talk ${talkId}:`, e)
+      y -= 4
+    }
+  } else {
+    y -= 4
+  }
+
+  page.drawLine({
+    start: { x: margin, y },
+    end: { x: pageW - margin, y },
+    thickness: 0.5,
+    color: rgb(0.89, 0.91, 0.94),
+  })
+  y -= 20
+
   if (sigs.length === 0) {
     drawText(page, 'No signatures recorded for this talk.', margin, y, 10, false, rgb(0.4, 0.4, 0.4))
   } else {
@@ -206,20 +244,25 @@ async function processOneTalk(
   let finalPdfBytes = signOffBytes
   if (talk.content_type === 'pdf' && talk.pdf_url) {
     try {
-      const { data: origData } = await adminClient.storage
+      const { data: origData, error: dlError } = await adminClient.storage
         .from('toolbox-talk-pdfs')
         .download(talk.pdf_url)
 
-      if (origData) {
+      if (dlError) {
+        console.error(`Failed to download original PDF for talk ${talkId} (path: ${talk.pdf_url}):`, dlError.message)
+      } else if (origData) {
         const origBytes = await origData.arrayBuffer()
         const origDoc = await PDFDocument.load(new Uint8Array(origBytes))
         const signOffDoc = await PDFDocument.load(signOffBytes)
         const copiedPages = await origDoc.copyPages(signOffDoc, signOffDoc.getPageIndices())
         for (const p of copiedPages) origDoc.addPage(p)
         finalPdfBytes = await origDoc.save()
+        console.log(`Merged original PDF with sign-off for talk ${talkId}`)
+      } else {
+        console.warn(`Download returned no data for talk ${talkId} (path: ${talk.pdf_url})`)
       }
     } catch (e) {
-      console.warn(`Could not merge original PDF for talk ${talkId}, uploading sign-off only:`, e)
+      console.error(`Could not merge original PDF for talk ${talkId}, uploading sign-off only:`, e)
     }
   }
 

@@ -6,7 +6,6 @@ import {
 } from 'react-native'
 import { useRouter, useFocusEffect } from 'expo-router'
 import * as DocumentPicker from 'expo-document-picker'
-const WebView = Platform.OS !== 'web' ? require('react-native-webview').WebView : null
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
@@ -558,18 +557,18 @@ export default function ToolboxTalkHome() {
                         title="Toolbox Talk Document"
                       />
                     ) : (
-                      <WebView
-                        source={{ uri: fileSignedUrl }}
-                        style={styles.pdfViewer}
-                        nestedScrollEnabled={true}
-                        startInLoadingState={true}
-                        renderLoading={() => (
-                          <ActivityIndicator
-                            color={Colors.primary}
-                            style={StyleSheet.absoluteFillObject}
-                          />
-                        )}
-                      />
+                      <TouchableOpacity
+                        style={styles.viewDocMobileBtn}
+                        onPress={() => {
+                          Linking.openURL(fileSignedUrl)
+                          if (!myRead) recordRead()
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.viewDocMobileIcon}>📄</Text>
+                        <Text style={styles.viewDocMobileText}>View Document</Text>
+                        <Text style={styles.viewDocMobileSub}>Opens in your device browser</Text>
+                      </TouchableOpacity>
                     )}
                   </>
                 ) : (
@@ -578,8 +577,8 @@ export default function ToolboxTalkHome() {
               </View>
             )}
 
-            {/* Open original file externally */}
-            {fileSignedUrl && (
+            {/* Open original file externally — hidden for native PDFs since the button above handles it */}
+            {fileSignedUrl && (activeTalk.content_type !== 'pdf' || Platform.OS === 'web') && (
               <TouchableOpacity
                 style={styles.openFileRow}
                 onPress={() => {
@@ -614,7 +613,9 @@ export default function ToolboxTalkHome() {
           ) : !myRead ? (
             <View style={styles.readGateMsg}>
               <Text style={styles.readGateMsgText}>
-                Please read the entire document before signing. Scroll to the bottom of the embedded document, or tap View as PDF to open the full file.
+                {Platform.OS === 'web'
+                  ? 'Please read the entire document before signing. Scroll to the bottom of the embedded document, or tap View as PDF to open the full file.'
+                  : 'Please read the entire document before signing. Tap the View Document button above to open and read it — this will unlock signing.'}
               </Text>
             </View>
           ) : (
@@ -717,12 +718,19 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
   },
   refreshBtnText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
-  pdfViewer: {
-    height: 480,
-    borderRadius: BorderRadius.sm,
-    overflow: 'hidden',
-    backgroundColor: Colors.background,
+  viewDocMobileBtn: {
+    borderRadius: BorderRadius.md,
+    borderWidth: 1.5,
+    borderColor: Colors.primary + '40',
+    backgroundColor: Colors.primary + '08',
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.md,
+    alignItems: 'center',
+    gap: Spacing.xs,
   },
+  viewDocMobileIcon: { fontSize: 40 },
+  viewDocMobileText: { fontSize: FontSize.base, fontWeight: '700', color: Colors.primary },
+  viewDocMobileSub: { fontSize: FontSize.sm, color: Colors.textMuted },
   openFileRow: {
     paddingHorizontal: Spacing.md,
     paddingBottom: Spacing.sm,

@@ -2,9 +2,10 @@ import { useState, useMemo, useCallback } from 'react'
 import {
   View, Text, FlatList, TouchableOpacity,
   ScrollView, StyleSheet, ActivityIndicator,
-  useWindowDimensions,
+  useWindowDimensions, Platform,
 } from 'react-native'
 import { useRouter, useFocusEffect } from 'expo-router'
+import DateTimePicker from '@react-native-community/datetimepicker'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { EmptyState } from '@/components/empty-state'
 import { Breadcrumb } from '@/components/breadcrumb'
@@ -15,7 +16,7 @@ import { useAuth } from '@/lib/auth'
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type LogStatus = 'working' | 'service' | 'thorough_examination' | 'winded_off' | 'breaking_down'
-type DateFilter = 'today' | 'week' | 'month' | 'all'
+type DateFilter = 'today' | 'week' | 'pick_day' | 'custom'
 
 interface CraneLog {
   id: string
@@ -55,14 +56,13 @@ const LABEL_W = 76
 const CHART_W = 540
 const DESKTOP = 768
 
-const DATE_FILTERS: { key: DateFilter; label: string }[] = [
+const DATE_FILTER_OPTIONS: { key: DateFilter; label: string }[] = [
   { key: 'today', label: 'Today' },
   { key: 'week', label: 'This Week' },
-  { key: 'month', label: 'This Month' },
-  { key: 'all', label: 'All Time' },
+  { key: 'pick_day', label: 'Pick a Day' },
+  { key: 'custom', label: 'Custom Range' },
 ]
 
-// Palette for subcontractors — cycles if more than 10
 const SUB_PALETTE = [
   '#0F2544', '#E8930A', '#16A34A', '#DC2626',
   '#7C3AED', '#0284C7', '#DB2777', '#D97706',
@@ -71,17 +71,19 @@ const SUB_PALETTE = [
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
+function toInputStr(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 function getWeekStart(): Date {
   const d = new Date()
   const day = d.getDay()
   d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
   d.setHours(0, 0, 0, 0)
   return d
-}
-
-function getMonthStart(): Date {
-  const d = new Date()
-  return new Date(d.getFullYear(), d.getMonth(), 1)
 }
 
 function getTodayBounds() {
@@ -96,38 +98,82 @@ function getDayBounds(date: Date) {
   return { start: start.getTime(), end: end.getTime() }
 }
 
-function getFilteredLogs(logs: CraneLog[], filter: DateFilter): CraneLog[] {
-  if (filter === 'all') return logs
-  const { start: todayStart, end: todayEnd } = getTodayBounds()
+function getFilteredLogs(
+  logs: CraneLog[],
+  filter: DateFilter,
+  pickedDay: Date | null,
+  customFrom: Date | null,
+  customTo: Date | null,
+): CraneLog[] {
   if (filter === 'today') {
+    const { start, end } = getTodayBounds()
     return logs.filter(l => {
       const s = new Date(l.start_time).getTime()
-      return s >= todayStart && s <= todayEnd
+      return s >= start && s <= end
     })
   }
   if (filter === 'week') {
     const weekStart = getWeekStart().getTime()
     return logs.filter(l => new Date(l.start_time).getTime() >= weekStart)
   }
-  const monthStart = getMonthStart().getTime()
-  return logs.filter(l => new Date(l.start_time).getTime() >= monthStart)
+  if (filter === 'pick_day') {
+    if (!pickedDay) return []
+    const { start, end } = getDayBounds(pickedDay)
+    return logs.filter(l => {
+      const s = new Date(l.start_time).getTime()
+      return s >= start && s <= end
+    })
+  }
+  // custom — open-ended if one bound missing
+  const from = customFrom ? new Date(customFrom).setHours(0, 0, 0, 0) : 0
+  const to = customTo ? new Date(customTo).setHours(23, 59, 59, 999) : Infinity
+  return logs.filter(l => {
+    const s = new Date(l.start_time).getTime()
+    return s >= from && s <= to
+  })
 }
 
-function periodLabel(filter: DateFilter): string {
+function periodLabel(
+  filter: DateFilter,
+  pickedDay: Date | null,
+  customFrom: Date | null,
+  customTo: Date | null,
+): string {
   switch (filter) {
     case 'today': return 'today'
     case 'week': return 'this week'
-    case 'month': return 'this month'
-    case 'all': return 'all time'
+    case 'pick_day':
+      return pickedDay
+        ? pickedDay.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+        : 'selected day'
+    case 'custom': {
+      const a = customFrom?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+      const b = customTo?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+      if (a && b) return `${a} – ${b}`
+      return a ?? b ?? 'selected range'
+    }
   }
 }
 
-function periodTitle(filter: DateFilter): string {
+function periodTitle(
+  filter: DateFilter,
+  pickedDay: Date | null,
+  customFrom: Date | null,
+  customTo: Date | null,
+): string {
   switch (filter) {
     case 'today': return 'Today'
     case 'week': return 'This Week'
-    case 'month': return 'This Month'
-    case 'all': return 'All Time'
+    case 'pick_day':
+      return pickedDay
+        ? pickedDay.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+        : 'Selected Day'
+    case 'custom': {
+      const a = customFrom?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+      const b = customTo?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+      if (a && b) return `${a} – ${b}`
+      return a ?? b ?? 'Custom Range'
+    }
   }
 }
 
@@ -173,6 +219,18 @@ export default function CraneLogsScreen() {
   const [rightTab, setRightTab] = useState<'analytics' | 'timeline'>('analytics')
   const [mobileView, setMobileView] = useState<'list' | 'stats'>('list')
 
+  // Shared date filter — drives both the log list and the analytics panel
+  const [dateFilter, setDateFilter] = useState<DateFilter>('week')
+  const [pickedDay, setPickedDay] = useState<Date | null>(null)
+  const [customFrom, setCustomFrom] = useState<Date | null>(null)
+  const [customTo, setCustomTo] = useState<Date | null>(null)
+
+  const handleDateFilter = useCallback((f: DateFilter) => {
+    setDateFilter(f)
+    // Seed pick_day to today on first use
+    if (f === 'pick_day') setPickedDay(prev => prev ?? new Date())
+  }, [])
+
   useFocusEffect(useCallback(() => {
     if (!profile?.site_id) return
     setIsLoading(true)
@@ -197,20 +255,35 @@ export default function CraneLogsScreen() {
     return [...seen.entries()].map(([id, crane_ref]) => ({ id, crane_ref }))
   }, [logs])
 
-  const filtered = useMemo(() => logs.filter(l => {
+  // Date filter applied first; open/closed and crane filters narrow the list further
+  const dateFilteredLogs = useMemo(
+    () => getFilteredLogs(logs, dateFilter, pickedDay, customFrom, customTo),
+    [logs, dateFilter, pickedDay, customFrom, customTo],
+  )
+
+  const filtered = useMemo(() => dateFilteredLogs.filter(l => {
     if (openFilter === 'open' && l.is_closed) return false
     if (openFilter === 'closed' && !l.is_closed) return false
     if (craneFilter !== 'all' && l.crane?.id !== craneFilter) return false
     return true
-  }), [logs, openFilter, craneFilter])
+  }), [dateFilteredLogs, openFilter, craneFilter])
 
   const openLog = () => router.push('/(appointed-person)/crane-logs/open')
   const goToLog = (id: string) => router.push(`/(appointed-person)/crane-logs/${id}`)
+
+  const dateFilterProps = {
+    dateFilter, pickedDay, customFrom, customTo,
+    onDateFilter: handleDateFilter,
+    onPickedDay: setPickedDay,
+    onCustomFrom: setCustomFrom,
+    onCustomTo: setCustomTo,
+  }
 
   const listProps = {
     logs: filtered, cranes, craneFilter, openFilter, isLoading,
     onCraneFilter: setCraneFilter, onOpenFilter: setOpenFilter,
     onLogPress: goToLog, onOpenLog: openLog,
+    ...dateFilterProps,
   }
 
   const breadcrumb = (
@@ -226,7 +299,9 @@ export default function CraneLogsScreen() {
         {breadcrumb}
         <View style={root.split}>
           <View style={root.left}><LogList {...listProps} /></View>
-          <View style={root.right}><RightPanel logs={logs} tab={rightTab} onTab={setRightTab} /></View>
+          <View style={root.right}>
+            <RightPanel logs={dateFilteredLogs} tab={rightTab} onTab={setRightTab} {...dateFilterProps} />
+          </View>
         </View>
       </ScreenWrapper>
     )
@@ -248,7 +323,7 @@ export default function CraneLogsScreen() {
       </View>
       {mobileView === 'list'
         ? <LogList {...listProps} />
-        : <RightPanel logs={logs} tab={rightTab} onTab={setRightTab} />
+        : <RightPanel logs={dateFilteredLogs} tab={rightTab} onTab={setRightTab} {...dateFilterProps} />
       }
     </ScreenWrapper>
   )
@@ -256,7 +331,7 @@ export default function CraneLogsScreen() {
 
 const root = StyleSheet.create({
   split: { flex: 1, flexDirection: 'row' },
-  left: { width: '40%', borderRightWidth: 1, borderRightColor: Colors.border },
+  left: { width: '40%', minWidth: 300, borderRightWidth: 1, borderRightColor: Colors.border },
   right: { flex: 1 },
   mobileBar: {
     flexDirection: 'row',
@@ -277,6 +352,78 @@ const root = StyleSheet.create({
   backBtn: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
 })
 
+// ─── Cross-platform date input ────────────────────────────────────────────────
+
+function DateInputField({
+  value, onChange, placeholder,
+}: {
+  value: Date | null
+  onChange(d: Date): void
+  placeholder: string
+}) {
+  const [showPicker, setShowPicker] = useState(false)
+
+  if (Platform.OS === 'web') {
+    return (
+      // @ts-ignore
+      <input
+        type="date"
+        value={value ? toInputStr(value) : ''}
+        onChange={(e: any) => {
+          if (e.target.value) onChange(new Date(e.target.value + 'T00:00:00'))
+        }}
+        style={{
+          padding: '3px 8px',
+          borderRadius: BorderRadius.sm,
+          border: `1px solid ${Colors.border}`,
+          fontSize: 11,
+          fontWeight: 600,
+          backgroundColor: Colors.background,
+          color: Colors.text,
+          cursor: 'pointer',
+          minWidth: 112,
+          outline: 'none',
+        }}
+      />
+    )
+  }
+
+  return (
+    <>
+      <TouchableOpacity style={di.btn} onPress={() => setShowPicker(true)} activeOpacity={0.8}>
+        <Text style={di.btnText}>
+          {value
+            ? value.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+            : placeholder}
+        </Text>
+      </TouchableOpacity>
+      {showPicker && (
+        <DateTimePicker
+          value={value ?? new Date()}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+          onChange={(_, date) => {
+            setShowPicker(false)
+            if (date) onChange(date)
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+const di = StyleSheet.create({
+  btn: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.sm,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  btnText: { fontSize: 11, fontWeight: '600', color: Colors.text },
+})
+
 // ─── Log List Panel ───────────────────────────────────────────────────────────
 
 interface ListProps {
@@ -285,13 +432,31 @@ interface ListProps {
   craneFilter: string
   openFilter: 'all' | 'open' | 'closed'
   isLoading: boolean
+  dateFilter: DateFilter
+  pickedDay: Date | null
+  customFrom: Date | null
+  customTo: Date | null
   onCraneFilter(id: string): void
   onOpenFilter(f: 'all' | 'open' | 'closed'): void
+  onDateFilter(f: DateFilter): void
+  onPickedDay(d: Date): void
+  onCustomFrom(d: Date): void
+  onCustomTo(d: Date): void
   onLogPress(id: string): void
   onOpenLog(): void
 }
 
-function LogList({ logs, cranes, craneFilter, openFilter, isLoading, onCraneFilter, onOpenFilter, onLogPress, onOpenLog }: ListProps) {
+function LogList({
+  logs, cranes, craneFilter, openFilter, isLoading,
+  dateFilter, pickedDay, customFrom, customTo,
+  onCraneFilter, onOpenFilter, onDateFilter, onPickedDay, onCustomFrom, onCustomTo,
+  onLogPress, onOpenLog,
+}: ListProps) {
+  const emptyMessage =
+    dateFilter === 'pick_day' && !pickedDay ? 'Pick a date above to view logs.' :
+    dateFilter === 'custom' && !customFrom && !customTo ? 'Set a date range above to view logs.' :
+    'Adjust filters or open a new log.'
+
   return (
     <View style={{ flex: 1 }}>
       <View style={ll.header}>
@@ -303,12 +468,8 @@ function LogList({ logs, cranes, craneFilter, openFilter, isLoading, onCraneFilt
         </Text>
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={ll.filterScroll}
-        contentContainerStyle={ll.filterRow}
-      >
+      {/* Open/closed + crane filter */}
+      <View style={ll.filterBar}>
         {(['all', 'open', 'closed'] as const).map(f => (
           <TouchableOpacity
             key={f}
@@ -338,7 +499,38 @@ function LogList({ logs, cranes, craneFilter, openFilter, isLoading, onCraneFilt
             <Text style={[ll.chipTxt, craneFilter === c.id && ll.chipTxtOn]}>{c.crane_ref}</Text>
           </TouchableOpacity>
         ))}
-      </ScrollView>
+      </View>
+
+      {/* Date filter */}
+      <View style={ll.dateBar}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ll.dateChips}>
+          {DATE_FILTER_OPTIONS.map(f => (
+            <TouchableOpacity
+              key={f.key}
+              style={[ll.chip, dateFilter === f.key && ll.chipOn]}
+              onPress={() => onDateFilter(f.key)}
+              activeOpacity={0.7}
+            >
+              <Text style={[ll.chipTxt, dateFilter === f.key && ll.chipTxtOn]}>{f.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+        {dateFilter === 'pick_day' && (
+          <View style={ll.dateInputRow}>
+            <Text style={ll.dateInputLabel}>Day:</Text>
+            <DateInputField value={pickedDay} onChange={onPickedDay} placeholder="Select date" />
+          </View>
+        )}
+        {dateFilter === 'custom' && (
+          <View style={ll.dateInputRow}>
+            <Text style={ll.dateInputLabel}>From:</Text>
+            <DateInputField value={customFrom} onChange={onCustomFrom} placeholder="Start date" />
+            <Text style={ll.rangeSep}>–</Text>
+            <Text style={ll.dateInputLabel}>To:</Text>
+            <DateInputField value={customTo} onChange={onCustomTo} placeholder="End date" />
+          </View>
+        )}
+      </View>
 
       {isLoading ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -350,7 +542,7 @@ function LogList({ logs, cranes, craneFilter, openFilter, isLoading, onCraneFilt
           keyExtractor={i => i.id}
           contentContainerStyle={ll.list}
           ListEmptyComponent={
-            <EmptyState title="No logs" message="Adjust filters or open a new log." icon="📋" />
+            <EmptyState title="No logs" message={emptyMessage} icon="📋" />
           }
           renderItem={({ item }) => <LogRow log={item} onPress={() => onLogPress(item.id)} />}
         />
@@ -378,18 +570,48 @@ const ll = StyleSheet.create({
   },
   openBtnText: { color: Colors.textInverse, fontSize: FontSize.sm, fontWeight: '700' },
   count: { fontSize: FontSize.xs, color: Colors.textSecondary },
-  filterScroll: {
+  filterBar: {
     backgroundColor: Colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    flexGrow: 0,
-  },
-  filterRow: {
     paddingHorizontal: Spacing.sm,
     paddingVertical: Spacing.xs,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: Spacing.xs,
+    alignItems: 'center',
+  },
+  dateBar: {
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    paddingVertical: Spacing.xs,
+  },
+  dateChips: {
+    flexDirection: 'row',
+    gap: Spacing.xs,
+    alignItems: 'center',
+    paddingHorizontal: Spacing.sm,
+    paddingBottom: 2,
+  },
+  dateInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    paddingTop: Spacing.xs,
+    flexWrap: 'wrap',
+  },
+  dateInputLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  rangeSep: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    fontWeight: '600',
+    paddingHorizontal: 2,
   },
   chip: {
     paddingHorizontal: Spacing.sm,
@@ -462,18 +684,19 @@ const lr = StyleSheet.create({
 
 // ─── Right Panel ─────────────────────────────────────────────────────────────
 
-function RightPanel({
-  logs, tab, onTab,
-}: {
+interface RightPanelProps {
   logs: CraneLog[]
   tab: 'analytics' | 'timeline'
   onTab(t: 'analytics' | 'timeline'): void
-}) {
-  const [dateFilter, setDateFilter] = useState<DateFilter>('week')
+  dateFilter: DateFilter
+  pickedDay: Date | null
+  customFrom: Date | null
+  customTo: Date | null
+}
 
+function RightPanel({ logs, tab, onTab, dateFilter, pickedDay, customFrom, customTo }: RightPanelProps) {
   return (
     <View style={{ flex: 1 }}>
-      {/* Tab bar */}
       <View style={rp.tabBar}>
         {(['analytics', 'timeline'] as const).map(t => (
           <TouchableOpacity
@@ -488,12 +711,9 @@ function RightPanel({
         ))}
       </View>
 
-      {/* Shared date filter — applies to both Analytics and Timeline tabs */}
-      <DateFilterPills value={dateFilter} onChange={setDateFilter} />
-
       {tab === 'analytics'
-        ? <AnalyticsPanel logs={logs} dateFilter={dateFilter} />
-        : <TimelinePanel logs={logs} dateFilter={dateFilter} />
+        ? <AnalyticsPanel logs={logs} dateFilter={dateFilter} pickedDay={pickedDay} customFrom={customFrom} customTo={customTo} />
+        : <TimelinePanel logs={logs} dateFilter={dateFilter} pickedDay={pickedDay} customFrom={customFrom} customTo={customTo} />
       }
     </View>
   )
@@ -519,100 +739,57 @@ const rp = StyleSheet.create({
   tabTextActive: { color: Colors.primary },
 })
 
-// ─── Date Filter Pills ────────────────────────────────────────────────────────
-
-function DateFilterPills({ value, onChange }: { value: DateFilter; onChange(f: DateFilter): void }) {
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={df.scroll}
-      contentContainerStyle={df.row}
-    >
-      {DATE_FILTERS.map(f => (
-        <TouchableOpacity
-          key={f.key}
-          style={[df.pill, value === f.key && df.pillOn]}
-          onPress={() => onChange(f.key)}
-          activeOpacity={0.7}
-        >
-          <Text style={[df.pillText, value === f.key && df.pillTextOn]}>{f.label}</Text>
-        </TouchableOpacity>
-      ))}
-    </ScrollView>
-  )
-}
-
-const df = StyleSheet.create({
-  scroll: {
-    flexGrow: 0,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  row: {
-    flexDirection: 'row',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs + 2,
-    gap: Spacing.xs,
-    alignItems: 'center',
-  },
-  pill: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: BorderRadius.full,
-    backgroundColor: Colors.background,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  pillOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  pillText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
-  pillTextOn: { color: Colors.textInverse },
-})
-
 // ─── Analytics Panel ─────────────────────────────────────────────────────────
 
-function AnalyticsPanel({ logs, dateFilter }: { logs: CraneLog[]; dateFilter: DateFilter }) {
-  const filteredLogs = useMemo(() => getFilteredLogs(logs, dateFilter), [logs, dateFilter])
-  const period = periodLabel(dateFilter)
-  const title = periodTitle(dateFilter)
+interface AnalyticsPanelProps {
+  logs: CraneLog[]
+  dateFilter: DateFilter
+  pickedDay: Date | null
+  customFrom: Date | null
+  customTo: Date | null
+}
+
+function AnalyticsPanel({ logs, dateFilter, pickedDay, customFrom, customTo }: AnalyticsPanelProps) {
+  // logs is already date-filtered by the root; use directly
+  const period = periodLabel(dateFilter, pickedDay, customFrom, customTo)
+  const title = periodTitle(dateFilter, pickedDay, customFrom, customTo)
 
   const totalSecs = useMemo(
-    () => filteredLogs.reduce((sum, l) => sum + logDurationSeconds(l), 0),
-    [filteredLogs],
+    () => logs.reduce((sum, l) => sum + logDurationSeconds(l), 0),
+    [logs],
   )
 
   const hoursPerCrane = useMemo(() => {
     const m = new Map<string, { ref: string; secs: number }>()
-    for (const l of filteredLogs) {
+    for (const l of logs) {
       const key = l.crane?.id ?? 'unknown'
       const cur = m.get(key) ?? { ref: l.crane?.crane_ref ?? '—', secs: 0 }
       cur.secs += logDurationSeconds(l)
       m.set(key, cur)
     }
     return [...m.values()].sort((a, b) => b.secs - a.secs)
-  }, [filteredLogs])
+  }, [logs])
 
   const statusSecs = useMemo(() => {
     const m: Record<LogStatus, number> = {
       working: 0, service: 0, thorough_examination: 0, winded_off: 0, breaking_down: 0,
     }
-    for (const l of filteredLogs) m[l.status] = (m[l.status] ?? 0) + logDurationSeconds(l)
+    for (const l of logs) m[l.status] = (m[l.status] ?? 0) + logDurationSeconds(l)
     return m
-  }, [filteredLogs])
+  }, [logs])
 
   const hoursByDay = useMemo(() => {
     const arr: number[] = Array(7).fill(0)
-    for (const l of filteredLogs) {
+    for (const l of logs) {
       const di = (new Date(l.start_time).getDay() + 6) % 7
       arr[di] += logDurationSeconds(l)
     }
     return arr
-  }, [filteredLogs])
+  }, [logs])
 
   const closedLogs = useMemo(
-    () => filteredLogs.filter(l => l.is_closed && l.duration_seconds != null),
-    [filteredLogs],
+    () => logs.filter(l => l.is_closed && l.duration_seconds != null),
+    [logs],
   )
   const avgSecs = closedLogs.length > 0
     ? closedLogs.reduce((s, l) => s + l.duration_seconds!, 0) / closedLogs.length
@@ -624,14 +801,12 @@ function AnalyticsPanel({ logs, dateFilter }: { logs: CraneLog[]; dateFilter: Da
   const busiestDay = hoursByDay[busiestIdx] > 0 ? DAYS[busiestIdx] : '—'
   const totalStatusSecs = Object.values(statusSecs).reduce((a, b) => a + b, 0)
 
-  // For today: replace "Busiest Day" with open log count (more useful for a single day)
   const card4 = dateFilter === 'today'
-    ? { label: 'Live Logs', value: String(filteredLogs.filter(l => !l.is_closed).length), sub: 'currently open' }
+    ? { label: 'Live Logs', value: String(logs.filter(l => !l.is_closed).length), sub: 'currently open' }
     : { label: 'Busiest Day', value: busiestDay, sub: period }
 
   return (
     <ScrollView contentContainerStyle={an.scroll}>
-      {/* Summary cards */}
       <View style={an.cards}>
         <SummaryCard label="Total Hours" value={fmtHours(totalSecs)} sub={period} />
         <SummaryCard label="Top Crane" value={topCrane} sub={period} />
@@ -639,7 +814,6 @@ function AnalyticsPanel({ logs, dateFilter }: { logs: CraneLog[]; dateFilter: Da
         <SummaryCard label={card4.label} value={card4.value} sub={card4.sub} />
       </View>
 
-      {/* Hours per crane */}
       <View style={an.section}>
         <Text style={an.sectionTitle}>Hours per Crane — {title}</Text>
         {hoursPerCrane.length === 0 ? (
@@ -655,7 +829,6 @@ function AnalyticsPanel({ logs, dateFilter }: { logs: CraneLog[]; dateFilter: Da
         ))}
       </View>
 
-      {/* Status breakdown */}
       <View style={an.section}>
         <Text style={an.sectionTitle}>Status Breakdown — {title}</Text>
         {totalStatusSecs === 0 ? (
@@ -682,8 +855,7 @@ function AnalyticsPanel({ logs, dateFilter }: { logs: CraneLog[]; dateFilter: Da
         )}
       </View>
 
-      {/* Subcontractor usage */}
-      <SubcontractorSection logs={filteredLogs} period={period} title={title} />
+      <SubcontractorSection logs={logs} period={period} title={title} />
     </ScrollView>
   )
 }
@@ -797,10 +969,8 @@ const an = StyleSheet.create({
 // ─── Subcontractor Section ────────────────────────────────────────────────────
 
 function SubcontractorSection({ logs, period, title }: { logs: CraneLog[]; period: string; title: string }) {
-  // Only logs that have a subcontractor assigned (working logs)
   const workingLogs = useMemo(() => logs.filter(l => l.subcontractor != null), [logs])
 
-  // Per-subcontractor aggregation
   const subStats = useMemo(() => {
     const m = new Map<string, {
       id: string; name: string; totalSecs: number; liftCount: number
@@ -822,26 +992,6 @@ function SubcontractorSection({ logs, period, title }: { logs: CraneLog[]; perio
     return [...m.values()].sort((a, b) => b.totalSecs - a.totalSecs)
   }, [workingLogs])
 
-  // Per-crane subcontractor breakdown (for stacked bars)
-  const craneBreakdown = useMemo(() => {
-    const m = new Map<string, { ref: string; subs: Map<string, { id: string; name: string; secs: number }> }>()
-    for (const l of workingLogs) {
-      if (!l.crane || !l.subcontractor) continue
-      if (!m.has(l.crane.id)) m.set(l.crane.id, { ref: l.crane.crane_ref, subs: new Map() })
-      const crane = m.get(l.crane.id)!
-      const sub = l.subcontractor
-      const se = crane.subs.get(sub.id) ?? { id: sub.id, name: sub.name, secs: 0 }
-      se.secs += logDurationSeconds(l)
-      crane.subs.set(sub.id, se)
-    }
-    return [...m.values()].sort((a, b) => {
-      const at = [...a.subs.values()].reduce((s, x) => s + x.secs, 0)
-      const bt = [...b.subs.values()].reduce((s, x) => s + x.secs, 0)
-      return bt - at
-    })
-  }, [workingLogs])
-
-  // Assign a stable color to each subcontractor by their rank in subStats
   const subColorMap = useMemo(() => {
     const m = new Map<string, string>()
     subStats.forEach((s, i) => m.set(s.id, SUB_PALETTE[i % SUB_PALETTE.length]))
@@ -862,8 +1012,6 @@ function SubcontractorSection({ logs, period, title }: { logs: CraneLog[]; perio
   return (
     <View style={an.section}>
       <Text style={an.sectionTitle}>Usage by Subcontractor — {title}</Text>
-
-      {/* Total hours per subcontractor */}
       <Text style={sb.subHeading}>Total Hours</Text>
       {subStats.map(sub => (
         <View key={sub.id} style={an.barRow}>
@@ -877,66 +1025,6 @@ function SubcontractorSection({ logs, period, title }: { logs: CraneLog[]; perio
           <Text style={an.barVal}>{fmtHours(sub.totalSecs)}</Text>
         </View>
       ))}
-
-      {/* Per-crane breakdown — stacked bars */}
-      {craneBreakdown.length > 0 && (
-        <>
-          <View style={sb.sep} />
-          <Text style={sb.subHeading}>Breakdown by Crane</Text>
-          {craneBreakdown.map(crane => {
-            const entries = [...crane.subs.values()].sort((a, b) => b.secs - a.secs)
-            const craneTotal = entries.reduce((s, e) => s + e.secs, 0)
-            return (
-              <View key={crane.ref} style={sb.craneRow}>
-                <Text style={sb.craneLabel} numberOfLines={1}>{crane.ref}</Text>
-                <View style={sb.stackedBar}>
-                  {entries.map(e => (
-                    <View
-                      key={e.id}
-                      style={{ flex: e.secs, backgroundColor: subColorMap.get(e.id) ?? Colors.primary }}
-                    />
-                  ))}
-                </View>
-                <Text style={an.barVal}>{fmtHours(craneTotal)}</Text>
-              </View>
-            )
-          })}
-
-          {/* Color legend for stacked bar */}
-          <View style={[an.legend, { marginTop: Spacing.sm }]}>
-            {subStats.map(sub => (
-              <View key={sub.id} style={an.legendRow}>
-                <View style={[an.legendDot, { backgroundColor: subColorMap.get(sub.id) }]} />
-                <Text style={an.legendLabel} numberOfLines={1}>{sub.name}</Text>
-              </View>
-            ))}
-          </View>
-        </>
-      )}
-
-      {/* Summary table */}
-      <View style={sb.sep} />
-      <Text style={sb.subHeading}>Summary</Text>
-
-      <View style={sb.tableHeader}>
-        <Text style={[sb.th, { flex: 2.5 }]}>Subcontractor</Text>
-        <Text style={[sb.th, sb.thR, { flex: 1.2 }]}>Hours</Text>
-        <Text style={[sb.th, sb.thR, { flex: 0.9 }]}>Lifts</Text>
-        <Text style={[sb.th, sb.thR, { flex: 1.8 }]}>Top Crane</Text>
-      </View>
-
-      {subStats.map((sub, i) => {
-        const topCrane = [...sub.cranes.values()].sort((a, b) => b.secs - a.secs)[0]?.ref ?? '—'
-        return (
-          <View key={sub.id} style={[sb.tableRow, i % 2 === 1 && sb.tableRowAlt]}>
-            <View style={[sb.colorDot, { backgroundColor: subColorMap.get(sub.id) }]} />
-            <Text style={[sb.td, { flex: 2.5 }]} numberOfLines={1}>{sub.name}</Text>
-            <Text style={[sb.td, sb.tdR, { flex: 1.2 }]}>{fmtHours(sub.totalSecs)}</Text>
-            <Text style={[sb.td, sb.tdR, { flex: 0.9 }]}>{sub.liftCount}</Text>
-            <Text style={[sb.td, sb.tdR, { flex: 1.8 }]} numberOfLines={1}>{topCrane}</Text>
-          </View>
-        )
-      })}
     </View>
   )
 }
@@ -950,86 +1038,40 @@ const sb = StyleSheet.create({
     letterSpacing: 0.6,
     marginBottom: Spacing.sm,
   },
-  sep: {
-    height: 1,
-    backgroundColor: Colors.border,
-    marginVertical: Spacing.md,
-  },
-  craneRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: 6,
-  },
-  craneLabel: {
-    width: 72,
-    fontSize: FontSize.xs,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-  stackedBar: {
-    flex: 1,
-    flexDirection: 'row',
-    height: 20,
-    borderRadius: 4,
-    overflow: 'hidden',
-    backgroundColor: Colors.background,
-  },
-  tableHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    marginBottom: 2,
-  },
-  tableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 7,
-    paddingHorizontal: 4,
-    gap: 4,
-  },
-  tableRowAlt: {
-    backgroundColor: Colors.background,
-    borderRadius: BorderRadius.sm,
-  },
-  th: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: Colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  thR: { textAlign: 'right' },
-  td: {
-    fontSize: FontSize.xs,
-    fontWeight: '500',
-    color: Colors.text,
-  },
-  tdR: {
-    textAlign: 'right',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  colorDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 2,
-    flexShrink: 0,
-  },
 })
 
 // ─── Timeline Panel ───────────────────────────────────────────────────────────
 
-function TimelinePanel({ logs, dateFilter }: { logs: CraneLog[]; dateFilter: DateFilter }) {
-  if (dateFilter === 'month') return <MonthTimelineView logs={logs} />
-  if (dateFilter === 'week' || dateFilter === 'all') return <WeekTimelineView logs={logs} />
-  // today
-  const { start: dayMs, end: dayEndMs } = getTodayBounds()
-  return <DayGanttChart logs={logs} dayMs={dayMs} dayEndMs={dayEndMs} isToday />
+interface TimelinePanelProps {
+  logs: CraneLog[]
+  dateFilter: DateFilter
+  pickedDay: Date | null
+  customFrom: Date | null
+  customTo: Date | null
+}
+
+function TimelinePanel({ logs, dateFilter, pickedDay, customFrom, customTo }: TimelinePanelProps) {
+  if (dateFilter === 'today') {
+    const { start: dayMs, end: dayEndMs } = getTodayBounds()
+    return <DayGanttChart logs={logs} dayMs={dayMs} dayEndMs={dayEndMs} isToday />
+  }
+  if (dateFilter === 'week') {
+    return <WeekTimelineView logs={logs} />
+  }
+  if (dateFilter === 'pick_day') {
+    if (!pickedDay) {
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl }}>
+          <EmptyState title="No date selected" message="Pick a date in the left panel to view the timeline." icon="📅" />
+        </View>
+      )
+    }
+    const { start: dayMs, end: dayEndMs } = getDayBounds(pickedDay)
+    const { start: todayMs } = getTodayBounds()
+    return <DayGanttChart logs={logs} dayMs={dayMs} dayEndMs={dayEndMs} isToday={dayMs === todayMs} />
+  }
+  // custom
+  return <CustomRangeTimelineView logs={logs} from={customFrom} to={customTo} />
 }
 
 // ─── Day Gantt Chart ──────────────────────────────────────────────────────────
@@ -1082,7 +1124,6 @@ function DayGanttChart({
 
       <ScrollView horizontal showsHorizontalScrollIndicator style={{ flex: 1 }}>
         <View style={tl.inner}>
-          {/* X-axis hour labels */}
           <View style={tl.axisRow}>
             <View style={{ width: LABEL_W }} />
             <View style={[tl.chartArea, { height: 22 }]}>
@@ -1097,7 +1138,6 @@ function DayGanttChart({
             </View>
           </View>
 
-          {/* Crane rows */}
           {craneRows.map(({ craneRef, logs: craneLogs }) => (
             <View key={craneRef} style={tl.craneRow}>
               <View style={tl.craneLabel}>
@@ -1166,7 +1206,6 @@ function WeekTimelineView({ logs }: { logs: CraneLog[] }) {
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Day selector tabs */}
       <View style={wk.tabs}>
         {weekDays.map(({ label, dayMs: dMs, dayNum }, i) => {
           const active = selectedDay === i
@@ -1222,54 +1261,74 @@ const wk = StyleSheet.create({
   },
 })
 
-// ─── Month Timeline View ──────────────────────────────────────────────────────
+// ─── Custom Range Timeline View ───────────────────────────────────────────────
 
-function MonthTimelineView({ logs }: { logs: CraneLog[] }) {
-  const now = new Date()
+function CustomRangeTimelineView({
+  logs, from, to,
+}: {
+  logs: CraneLog[]
+  from: Date | null
+  to: Date | null
+}) {
   const todayMs = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() }, [])
 
-  // Generate all days from start of month to today (inclusive)
-  const monthDays = useMemo(() => {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1)
+  const rangeDays = useMemo(() => {
+    if (!from && !to) return []
+    const start = new Date(from ?? to!)
+    const end = new Date(to ?? from!)
+    start.setHours(0, 0, 0, 0)
+    end.setHours(0, 0, 0, 0)
     const days: { date: Date; dayMs: number; dayEndMs: number }[] = []
     let d = new Date(start)
-    while (d.getTime() <= todayMs) {
+    let count = 0
+    while (d.getTime() <= end.getTime() && count < 90) {
       const clone = new Date(d)
       const { start: dayMs, end: dayEndMs } = getDayBounds(clone)
       days.push({ date: clone, dayMs, dayEndMs })
       d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)
+      count++
     }
     return days
-  }, [todayMs])
+  }, [from, to])
 
-  // Compute total hours and log count per day (only days with activity)
   const dailyStats = useMemo(() =>
-    monthDays.map(({ date, dayMs, dayEndMs }) => {
+    rangeDays.map(({ date, dayMs, dayEndMs }) => {
       const dayLogs = logs.filter(l => {
         const s = new Date(l.start_time).getTime()
         return s >= dayMs && s <= dayEndMs
       })
       return { date, dayMs, totalSecs: dayLogs.reduce((s, l) => s + logDurationSeconds(l), 0), logCount: dayLogs.length }
     }).filter(d => d.logCount > 0),
-  [logs, monthDays])
+  [logs, rangeDays])
 
-  const maxSecs = Math.max(...dailyStats.map(d => d.totalSecs), 1)
-  const monthLabel = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
-
-  if (dailyStats.length === 0) {
+  if (!from && !to) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl }}>
-        <EmptyState title="No activity this month" message="No crane logs recorded this month." icon="📅" />
+        <EmptyState title="No range selected" message="Set a date range in the left panel to view the timeline." icon="📅" />
       </View>
     )
   }
 
+  if (dailyStats.length === 0) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl }}>
+        <EmptyState title="No activity" message="No crane logs in this date range." icon="📅" />
+      </View>
+    )
+  }
+
+  const maxSecs = Math.max(...dailyStats.map(d => d.totalSecs), 1)
+  const rangeLabel = [
+    from?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+    to?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+  ].filter(Boolean).join(' – ')
+
   return (
     <ScrollView contentContainerStyle={mo.scroll}>
-      <Text style={mo.monthTitle}>{monthLabel}</Text>
+      <Text style={mo.monthTitle}>{rangeLabel}</Text>
       {dailyStats.map(({ date, dayMs, totalSecs, logCount }) => {
         const isToday = dayMs === todayMs
-        const label = date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })
+        const label = date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
         return (
           <View key={dayMs} style={[mo.dayRow, isToday && mo.dayRowToday]}>
             <Text style={[mo.dateLabel, isToday && mo.dateLabelToday]}>{label}</Text>
@@ -1304,7 +1363,7 @@ const mo = StyleSheet.create({
   },
   dayRowToday: { backgroundColor: Colors.primary + '12' },
   dateLabel: {
-    width: 64,
+    width: 88,
     fontSize: FontSize.xs,
     fontWeight: '600',
     color: Colors.textSecondary,

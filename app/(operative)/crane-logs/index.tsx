@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { View, Text, FlatList, TouchableOpacity, ScrollView, StyleSheet } from 'react-native'
+import { View, Text, FlatList, TouchableOpacity, StyleSheet } from 'react-native'
 import { useRouter } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { StatusBadge, OpenClosedBadge } from '@/components/status-badge'
@@ -43,7 +43,7 @@ export default function OperativeCraneLogsList() {
   return (
     <ScreenWrapper edges={['bottom']}>
       <View style={styles.filterSection}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+        <View style={styles.filterRow}>
           {(['all', 'open', 'closed'] as const).map((f) => (
             <TouchableOpacity
               key={f}
@@ -55,7 +55,7 @@ export default function OperativeCraneLogsList() {
               </Text>
             </TouchableOpacity>
           ))}
-        </ScrollView>
+        </View>
       </View>
 
       <FlatList
@@ -105,7 +105,7 @@ export default function OperativeCraneLogsList() {
 
 const styles = StyleSheet.create({
   filterSection: { backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  filterRow: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, gap: Spacing.xs },
+  filterRow: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, gap: Spacing.xs, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' },
   filterChip: { paddingHorizontal: Spacing.sm, paddingVertical: 5, borderRadius: BorderRadius.full, backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border },
   filterChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   filterChipText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary },
