@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Linking, Alert,
+  ActivityIndicator, Linking, Alert, Platform,
 } from 'react-native'
 import { useFocusEffect } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
@@ -54,50 +54,50 @@ function badgeLabel(ct: string) {
 }
 
 export default function ToolboxTalkArchiveScreen() {
-  const { profile } = useAuth()
+  const { profile, role } = useAuth()
   const [talks, setTalks] = useState<ArchivedTalk[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [fetchError, setFetchError] = useState<string | null>(null)
 
-  useFocusEffect(
-    useCallback(() => {
-      if (!profile?.site_id) return
-      setIsLoading(true)
-      setFetchError(null)
-      supabase
-        .from('toolbox_talks')
-        .select(`
-          id, title, content_type, pdf_url, sign_off_pdf_url, archived_at, created_at,
-          creator:profiles!created_by(full_name),
-          toolbox_talk_signatures(id)
-        `)
-        .eq('site_id', profile.site_id)
-        .eq('status', 'archived')
-        .order('archived_at', { ascending: false })
-        .then(({ data, error }) => {
-          if (error) {
-            setFetchError(error.message)
-            setIsLoading(false)
-            return
-          }
-          const raw = (data as unknown as ArchivedTalkRaw[]) ?? []
-          setTalks(
-            raw.map((t) => ({
-              id: t.id,
-              title: t.title,
-              content_type: t.content_type,
-              pdf_url: t.pdf_url,
-              sign_off_pdf_url: t.sign_off_pdf_url,
-              archived_at: t.archived_at,
-              created_at: t.created_at,
-              creator: t.creator,
-              sig_count: t.toolbox_talk_signatures?.length ?? 0,
-            }))
-          )
-          setIsLoading(false)
-        })
-    }, [profile?.site_id])
-  )
+  const canManage = role === 'appointed_person' || role === 'crane_supervisor'
+
+  const fetchArchive = useCallback(async () => {
+    if (!profile?.site_id) return
+    setIsLoading(true)
+    setFetchError(null)
+    const { data, error } = await supabase
+      .from('toolbox_talks')
+      .select(`
+        id, title, content_type, pdf_url, sign_off_pdf_url, archived_at, created_at,
+        creator:profiles!created_by(full_name),
+        toolbox_talk_signatures(id)
+      `)
+      .eq('site_id', profile.site_id)
+      .eq('status', 'archived')
+      .order('archived_at', { ascending: false })
+    if (error) {
+      setFetchError(error.message)
+      setIsLoading(false)
+      return
+    }
+    const raw = (data as unknown as ArchivedTalkRaw[]) ?? []
+    setTalks(
+      raw.map((t) => ({
+        id: t.id,
+        title: t.title,
+        content_type: t.content_type,
+        pdf_url: t.pdf_url,
+        sign_off_pdf_url: t.sign_off_pdf_url,
+        archived_at: t.archived_at,
+        created_at: t.created_at,
+        creator: t.creator,
+        sig_count: t.toolbox_talk_signatures?.length ?? 0,
+      }))
+    )
+    setIsLoading(false)
+  }, [profile?.site_id])
+
+  useFocusEffect(useCallback(() => { fetchArchive() }, [fetchArchive]))
 
   async function handleViewSignOff(talk: ArchivedTalk) {
     const storagePath = talk.sign_off_pdf_url ?? talk.pdf_url
@@ -110,6 +110,35 @@ export default function ToolboxTalkArchiveScreen() {
       return
     }
     if (data?.signedUrl) Linking.openURL(data.signedUrl)
+  }
+
+  async function handleDeleteArchived(talkId: string, title: string) {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm(`Delete "${title}" from the archive? This cannot be undone.`)
+      : await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Delete from Archive',
+            `Delete "${title}" from the archive?`,
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Delete', style: 'destructive', onPress: () => resolve(true) },
+            ],
+          )
+        })
+
+    if (!confirmed) return
+
+    const { error } = await supabase
+      .from('toolbox_talks')
+      .update({ status: 'deleted' })
+      .eq('id', talkId)
+
+    if (error) {
+      Alert.alert('Delete failed', error.message)
+      return
+    }
+
+    fetchArchive()
   }
 
   return (
@@ -151,19 +180,30 @@ export default function ToolboxTalkArchiveScreen() {
                 Archived {formatDate(item.archived_at ?? item.created_at)} · {item.sig_count} {item.sig_count === 1 ? 'signature' : 'signatures'}
               </Text>
               <Text style={styles.cardCreator}>{item.creator?.full_name ?? '—'}</Text>
-              {(item.sign_off_pdf_url || item.pdf_url) ? (
-                <TouchableOpacity
-                  style={styles.pdfBtn}
-                  onPress={() => handleViewSignOff(item)}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.pdfBtnText}>
-                    {item.sign_off_pdf_url ? 'View Sign-Off PDF →' : 'View Original PDF →'}
-                  </Text>
-                </TouchableOpacity>
-              ) : (
-                <Text style={styles.noPdfText}>No document available</Text>
-              )}
+              <View style={styles.cardActions}>
+                {(item.sign_off_pdf_url || item.pdf_url) ? (
+                  <TouchableOpacity
+                    style={styles.pdfBtn}
+                    onPress={() => handleViewSignOff(item)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.pdfBtnText}>
+                      {item.sign_off_pdf_url ? 'View Sign-Off PDF →' : 'View Original PDF →'}
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={styles.noPdfText}>No document available</Text>
+                )}
+                {canManage && (
+                  <TouchableOpacity
+                    style={styles.archiveDeleteBtn}
+                    onPress={() => handleDeleteArchived(item.id, item.title)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.archiveDeleteBtnText}>Delete</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
           )}
         />
@@ -201,4 +241,7 @@ const styles = StyleSheet.create({
   pdfBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
   noPdfText: { fontSize: FontSize.xs, color: Colors.textMuted },
   errorText: { fontSize: FontSize.sm, color: Colors.danger, textAlign: 'center', padding: Spacing.md },
+  cardActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  archiveDeleteBtn: { paddingHorizontal: Spacing.sm, paddingVertical: 4 },
+  archiveDeleteBtnText: { fontSize: FontSize.xs, color: Colors.danger, fontWeight: '600' },
 })

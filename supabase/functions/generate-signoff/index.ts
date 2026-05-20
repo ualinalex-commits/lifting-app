@@ -1,4 +1,5 @@
 // Edge Function: generate-signoff
+console.log('GENERATE-SIGNOFF: v2 with fixed column layout')
 //
 // Generates a sign-off PDF for one or more toolbox talks.
 //
@@ -168,73 +169,102 @@ async function processOneTalk(
   if (sigs.length === 0) {
     drawText(page, 'No signatures recorded for this talk.', margin, y, 10, false, rgb(0.4, 0.4, 0.4))
   } else {
-    const colX = { name: margin, role: margin + 130, company: margin + 270, time: margin + 400 }
+    // Explicit column X positions — each value must land under its header
+    const COL = { name: 50, role: 200, company: 320, signedAt: 450 }
+    const rowHeight = 60
 
     function drawRowHeaders(targetPage: typeof page, yPos: number) {
-      drawText(targetPage, 'Name', colX.name, yPos, 9, true)
-      drawText(targetPage, 'Role', colX.role, yPos, 9, true)
-      drawText(targetPage, 'Company', colX.company, yPos, 9, true)
-      drawText(targetPage, 'Signed At', colX.time, yPos, 9, true)
+      drawText(targetPage, 'Name',      COL.name,     yPos, 9, true)
+      drawText(targetPage, 'Role',      COL.role,     yPos, 9, true)
+      drawText(targetPage, 'Company',   COL.company,  yPos, 9, true)
+      drawText(targetPage, 'Signed At', COL.signedAt, yPos, 9, true)
     }
 
     drawRowHeaders(page, y)
-    y -= 14
+    y -= 8
 
     page.drawLine({
       start: { x: margin, y },
       end: { x: pageW - margin, y },
       thickness: 0.5,
-      color: rgb(0.89, 0.91, 0.94),
+      color: rgb(0, 0, 0),
     })
-    y -= 10
+    y -= 20
 
     for (const sig of sigs) {
-      // New page if insufficient space
-      if (y < margin + 80) {
+      if (y < 100) {
         page = pdfDoc.addPage([pageW, pageH])
         y = pageH - margin
         drawRowHeaders(page, y)
+        y -= 8
+        page.drawLine({
+          start: { x: margin, y },
+          end: { x: pageW - margin, y },
+          thickness: 0.5,
+          color: rgb(0, 0, 0),
+        })
         y -= 20
       }
 
-      // Embed signature image
-      try {
-        const { data: imgData } = await adminClient.storage
-          .from('toolbox-talk-signatures')
-          .download(sig.signature_image_url)
+      // Text sits in the lower portion of the row, below the signature image
+      const textY = y - 20
 
-        if (imgData) {
-          const imgBytes = await imgData.arrayBuffer()
-          const sigImage = await pdfDoc.embedPng(new Uint8Array(imgBytes))
-          const dims = sigImage.scale(0.15)
-          page.drawImage(sigImage, {
-            x: colX.name,
-            y: y - dims.height,
-            width: dims.width,
-            height: dims.height,
-          })
+      // Name — left column
+      drawText(page, (sig.full_name ?? '').substring(0, 25), COL.name, textY, 10)
+
+      // Role — second column
+      drawText(page, (ROLE_LABELS[sig.role] ?? sig.role ?? '').substring(0, 18), COL.role, textY, 10)
+
+      // Company — third column
+      drawText(page, (sig.company ?? '').substring(0, 22), COL.company, textY, 10)
+
+      // Signed At — fourth column: signature image above timestamp text
+      if (sig.signature_image_url) {
+        try {
+          const { data: sigFile } = await adminClient.storage
+            .from('toolbox-talk-signatures')
+            .download(sig.signature_image_url)
+          if (sigFile) {
+            const sigBytes = await sigFile.arrayBuffer()
+            let sigImage
+            try {
+              sigImage = await pdfDoc.embedPng(new Uint8Array(sigBytes))
+            } catch {
+              sigImage = await pdfDoc.embedJpg(new Uint8Array(sigBytes))
+            }
+            page.drawImage(sigImage, {
+              x: COL.signedAt,
+              y: y - 15,
+              width: 100,
+              height: 35,
+            })
+          }
+        } catch (e) {
+          console.error('Failed to embed signature:', e)
+          drawText(page, '[signature]', COL.signedAt, textY, 8, false, rgb(0.6, 0.6, 0.6))
         }
-      } catch {
-        drawText(page, '[signature]', colX.name, y - 10, 8, false, rgb(0.6, 0.6, 0.6))
       }
 
-      const signedAt = new Date(sig.signed_at).toLocaleString('en-GB', {
-        day: 'numeric', month: 'short', year: 'numeric',
-        hour: '2-digit', minute: '2-digit',
+      // Timestamp — below signature image, 24-hour format
+      const tsText = new Date(sig.signed_at).toLocaleString('en-GB', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
       })
-      drawText(page, sig.full_name, colX.role, y, 9)
-      drawText(page, ROLE_LABELS[sig.role] ?? sig.role, colX.company, y, 9)
-      drawText(page, sig.company, colX.time, y, 9)
-      drawText(page, signedAt, colX.name, y - 40, 8, false, rgb(0.4, 0.4, 0.4))
+      drawText(page, tsText, COL.signedAt, y - 28, 8, false, rgb(0.4, 0.4, 0.4))
 
-      y -= 60
+      // Row separator
       page.drawLine({
-        start: { x: margin, y: y + 5 },
-        end: { x: pageW - margin, y: y + 5 },
+        start: { x: margin, y: y - 35 },
+        end: { x: pageW - margin, y: y - 35 },
         thickness: 0.3,
-        color: rgb(0.93, 0.94, 0.96),
+        color: rgb(0.85, 0.85, 0.85),
       })
-      y -= 5
+
+      y -= rowHeight
     }
   }
 

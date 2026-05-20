@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
   Alert, ActivityIndicator, NativeSyntheticEvent, NativeScrollEvent, Linking,
@@ -13,6 +13,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth'
 import { callGenerateSignOff } from '@/lib/api'
 import mammoth from 'mammoth'
+import { WebView } from 'react-native-webview'
 
 interface ActiveTalk {
   id: string
@@ -28,6 +29,33 @@ interface ActiveTalk {
 function filenameToTitle(filename: string): string {
   return filename.replace(/\.(pdf|docx)$/i, '').replace(/[-_]/g, ' ').trim()
 }
+
+function normaliseDocxText(raw: string): string {
+  return raw
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .join('\n')
+}
+
+function isHtmlContent(text: string): boolean {
+  return text.trimStart().startsWith('<')
+}
+
+const docxStyles = `
+  .docx-content h1 { font-size: 20px; font-weight: 700; margin: 16px 0 8px 0; color: #1a1a1a; }
+  .docx-content h2 { font-size: 17px; font-weight: 700; margin: 14px 0 6px 0; color: #1a1a1a; }
+  .docx-content h3 { font-size: 15px; font-weight: 600; margin: 12px 0 4px 0; color: #1a1a1a; }
+  .docx-content p  { margin: 0 0 8px 0; font-size: 14px; line-height: 1.6; color: #333; }
+  .docx-content ol { margin: 0 0 8px 0; padding-left: 24px; }
+  .docx-content ul { margin: 0 0 8px 0; padding-left: 24px; }
+  .docx-content li { margin-bottom: 4px; font-size: 14px; line-height: 1.5; color: #333; }
+  .docx-content strong { font-weight: 700; }
+  .docx-content em { font-style: italic; }
+  .docx-content table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  .docx-content td, .docx-content th { border: 1px solid #ccc; padding: 6px 10px; font-size: 13px; }
+  .docx-content th { background: #f0f0f0; font-weight: 600; }
+`
 
 // IMPORTANT: Before using this feature, create the following Supabase Storage buckets
 // in the Supabase Dashboard (Storage → New bucket):
@@ -117,7 +145,7 @@ async function extractDocxTextClient(asset: DocumentPicker.DocumentPickerAsset):
     const res = await fetch(asset.uri)
     arrayBuffer = await res.arrayBuffer()
   }
-  const result = await mammoth.extractRawText({ arrayBuffer })
+  const result = await mammoth.convertToHtml({ arrayBuffer })
   return result.value
 }
 
@@ -135,6 +163,84 @@ export default function ToolboxTalkHome() {
   const [isRecordingRead, setIsRecordingRead] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+
+  const docxDivRef = useRef<any>(null)
+  const myReadRef = useRef<{ id: string; read_at: string } | null>(null)
+
+  // Keep ref in sync so div scroll handler always sees the latest myRead value
+  useEffect(() => {
+    myReadRef.current = myRead
+  }, [myRead])
+
+  // Inject docx-content CSS once on web mount
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const id = 'docx-content-styles'
+    if (document.getElementById(id)) return
+    const style = document.createElement('style')
+    style.id = id
+    style.textContent = docxStyles
+    document.head.appendChild(style)
+  }, [])
+
+  // Scroll-to-bottom read tracking for the HTML div on web
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    if (activeTalk?.content_type !== 'docx') return
+
+    // Small delay to allow the div to render before attaching the listener
+    const timer = setTimeout(() => {
+      const div = docxDivRef.current
+      if (!div) return
+
+      const handleDivScroll = () => {
+        if (myReadRef.current) return
+        const { scrollTop, scrollHeight, clientHeight } = div
+        console.log('DIV SCROLL:', { scrollTop, scrollHeight, clientHeight, diff: scrollHeight - clientHeight - scrollTop })
+        if (scrollTop + clientHeight >= scrollHeight - 50) {
+          console.log('READ: docx div reached bottom')
+          setHasScrolledToBottom(true)
+          setMyRead({ id: 'local', read_at: new Date().toISOString() })
+          if (profile?.id && activeTalk?.id) {
+            supabase
+              .from('toolbox_talk_reads')
+              .insert({ talk_id: activeTalk.id, user_id: profile.id })
+              .then(({ error }) => {
+                if (error && error.code !== '23505') {
+                  console.error('READ INSERT ERROR:', error)
+                } else {
+                  console.log('READ: DB insert success or already exists')
+                }
+              })
+          }
+        }
+      }
+
+      div.addEventListener('scroll', handleDivScroll, { passive: true })
+
+      // Also check immediately in case the content fits on screen without scrolling
+      const { scrollHeight, clientHeight } = div
+      if (scrollHeight <= clientHeight + 50) {
+        console.log('READ: docx content fits on screen, marking read immediately')
+        if (!myReadRef.current) {
+          setHasScrolledToBottom(true)
+          setMyRead({ id: 'local', read_at: new Date().toISOString() })
+          if (profile?.id && activeTalk?.id) {
+            supabase
+              .from('toolbox_talk_reads')
+              .insert({ talk_id: activeTalk.id, user_id: profile.id })
+              .then(({ error }) => {
+                if (error && error.code !== '23505') console.error('READ INSERT ERROR:', error)
+              })
+          }
+        }
+      }
+
+      return () => div.removeEventListener('scroll', handleDivScroll)
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [activeTalk?.id, activeTalk?.content_type, profile?.id])
 
   const canManage = role === 'appointed_person' || role === 'crane_supervisor'
 
@@ -194,11 +300,22 @@ export default function ToolboxTalkHome() {
   async function recordRead() {
     if (myRead || isRecordingRead || !profile?.id || !activeTalk) return
     setIsRecordingRead(true)
+
     const { error } = await supabase
       .from('toolbox_talk_reads')
       .insert({ talk_id: activeTalk.id, user_id: profile.id })
+
     setIsRecordingRead(false)
-    if (!error) setMyRead({ id: 'pending', read_at: new Date().toISOString() })
+
+    if (!error) {
+      console.log('READ: recorded successfully')
+      setMyRead({ id: 'local', read_at: new Date().toISOString() })
+    } else if (error.code === '23505') {
+      // already read — unique constraint — just mark locally
+      setMyRead({ id: 'local', read_at: new Date().toISOString() })
+    } else {
+      console.error('READ ERROR:', error)
+    }
   }
 
   function handleScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
@@ -206,9 +323,17 @@ export default function ToolboxTalkHome() {
     const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
     const reachedBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 50
     if (reachedBottom) {
-      console.log('READ: scrolled to bottom of embedded document')
+      console.log('READ: outer ScrollView reached bottom, content_type:', activeTalk.content_type)
       setHasScrolledToBottom(true)
-      recordRead()
+      setMyRead({ id: 'local', read_at: new Date().toISOString() })
+      if (profile?.id && activeTalk?.id) {
+        supabase
+          .from('toolbox_talk_reads')
+          .insert({ talk_id: activeTalk.id, user_id: profile.id })
+          .then(({ error }) => {
+            if (error && error.code !== '23505') console.error('READ INSERT ERROR:', error)
+          })
+      }
     }
   }
 
@@ -437,7 +562,7 @@ export default function ToolboxTalkHome() {
           { paddingBottom: activeTalk && !isLoading ? 90 : Spacing.xxl },
         ]}
         onScroll={handleScroll}
-        scrollEventThrottle={100}
+        scrollEventThrottle={16}
       >
         {/* Action buttons */}
         <View style={styles.buttonGrid}>
@@ -530,11 +655,67 @@ export default function ToolboxTalkHome() {
               </View>
             </View>
 
-            {/* DOCX — extracted text */}
+            {/* DOCX — HTML viewer with plain-text fallback for legacy records */}
             {activeTalk.content_type === 'docx' && (
               <View style={styles.docContent}>
                 {activeTalk.content_text ? (
-                  <Text style={styles.docText}>{activeTalk.content_text}</Text>
+                  (() => {
+                    const contentIsHtml = isHtmlContent(activeTalk.content_text!)
+                    if (contentIsHtml && Platform.OS === 'web') {
+                      return (
+                        <div
+                          ref={docxDivRef}
+                          className="docx-content"
+                          dangerouslySetInnerHTML={{ __html: activeTalk.content_text! }}
+                          style={{
+                            fontFamily: 'system-ui, -apple-system, sans-serif',
+                            fontSize: '15px',
+                            lineHeight: '1.6',
+                            color: '#1a1a1a',
+                            padding: '16px',
+                            maxWidth: '100%',
+                            overflowWrap: 'break-word',
+                          } as React.CSSProperties}
+                        />
+                      )
+                    } else if (contentIsHtml && Platform.OS !== 'web') {
+                      return (
+                        <WebView
+                          source={{
+                            html: `
+                              <html>
+                                <head>
+                                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                                  <style>
+                                    body { font-family: -apple-system, sans-serif; font-size: 15px;
+                                           line-height: 1.6; color: #1a1a1a; padding: 16px; margin: 0; }
+                                    h1 { font-size: 20px; font-weight: 700; margin: 16px 0 8px 0; }
+                                    h2 { font-size: 17px; font-weight: 700; margin: 14px 0 6px 0; }
+                                    h3 { font-size: 15px; font-weight: 600; margin: 12px 0 4px 0; }
+                                    p  { margin: 0 0 8px 0; }
+                                    ol, ul { padding-left: 24px; margin: 0 0 8px 0; }
+                                    li { margin-bottom: 4px; }
+                                    table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+                                    td, th { border: 1px solid #ccc; padding: 6px 10px; font-size: 13px; }
+                                    th { background: #f0f0f0; }
+                                    strong { font-weight: 700; }
+                                  </style>
+                                </head>
+                                <body>${activeTalk.content_text}</body>
+                              </html>
+                            `,
+                          }}
+                          style={{ height: 480, borderRadius: 8 }}
+                          nestedScrollEnabled={true}
+                          scrollEnabled={true}
+                        />
+                      )
+                    } else {
+                      return (
+                        <Text style={styles.docText}>{normaliseDocxText(activeTalk.content_text!)}</Text>
+                      )
+                    }
+                  })()
                 ) : (
                   <View style={styles.extractingState}>
                     <Text style={styles.extractingText}>
@@ -707,7 +888,7 @@ const styles = StyleSheet.create({
   },
   docMeta: { fontSize: FontSize.xs, color: Colors.textMuted },
   docContent: { padding: Spacing.md },
-  docText: { fontSize: FontSize.base, color: Colors.text, lineHeight: 26 },
+  docText: { fontSize: FontSize.base, color: Colors.text, lineHeight: 22, letterSpacing: 0.1 },
   extractingState: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.md },
   extractingText: { fontSize: FontSize.sm, color: Colors.textMuted },
   refreshBtn: {

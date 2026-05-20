@@ -302,13 +302,13 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 
 ## 8. Current Build Status
 
-> Last updated: 2026-05-19
+> Last updated: 2026-05-20
 
 | Feature | Status | Detail |
 |---|---|---|
 | **Crane Logs** | Built & Working | Open/close logs, edit while open, filter by crane/status/date/open-closed, analytics screen with subcontractor usage breakdown and date-range filters |
 | **Crane Schedule** | Built & Working | Subcontractor crane booking requests, appointed person approval flow |
-| **Toolbox Talk** | Built & Working | Upload PDF or Word file from device with client-side text extraction (mammoth), auto-saves to company library, embedded inline viewer for PDF (iframe on web, WebView on native) and DOCX (extracted text), scroll-to-bottom or View as PDF marks read, drawn signature (HTML5 canvas on web with black pen on white background, react-native-signature-canvas on native), Attendance modal showing Read + Signed in real time, delete talk and delete library entries (soft-delete via status flags), duplicate library detection, Generate Sign-Off Edge Function appends signatures to original PDF and archives the talk, auto-archive at 18:00 via pg_cron |
+| **Toolbox Talk** | Built & Working | Upload PDF or Word file from device with client-side HTML extraction (mammoth convertToHtml), auto-saves to company library with duplicate detection, embedded inline viewer for PDF (iframe on web, native button on mobile to open externally) and DOCX (rendered as styled HTML preserving headings, lists, tables), scroll-to-bottom on outer ScrollView marks read instantly, drawn signature (HTML5 canvas on web, react-native-signature-canvas on native), Attendance modal showing Read + Signed in real time via Supabase Realtime, delete active talk + delete library entries + delete archived talks (all soft-delete via status flags), Generate Sign-Off Edge Function builds combined PDF with correctly-aligned columns (Name, Role, Company, Signed At with signature image and timestamp), auto-archive at 18:00 via pg_cron |
 | **Daily Briefing** | Placeholder | Shell screen only — not yet built |
 | **LOLER Register** | Placeholder | Shell screen only — not yet built |
 | **Supervisor Checks** | Placeholder | Shell screen only — not yet built |
@@ -372,27 +372,36 @@ The home screen refreshes on focus via `useFocusEffect` — the Signed ✓ badge
 **Platform-specific rendering:**
 
 - **Web — PDF:** rendered via `<iframe src={signedUrl} />` at 480px height.
-- **Web — DOCX:** extracted plain text rendered in a `<ScrollView>` as a `<Text>` block.
-- **Native — PDF:** rendered via `react-native-webview` at 480px height with `nestedScrollEnabled`.
-- **Native — DOCX:** extracted plain text rendered in a `<ScrollView>` as a `<Text>` block.
+- **Web — DOCX:** rendered inline via `<div className="docx-content" dangerouslySetInnerHTML={...}>` with a custom CSS stylesheet for h1/h2/h3, p, ol/ul, li, strong, em, and table styling.
+- **Native — PDF:** opens externally via a button (`Linking.openURL`) — WebView rendering was removed.
+- **Native — DOCX:** rendered inside a `WebView` with the HTML wrapped in a styled HTML document.
 
-**DOCX text extraction:**
+**DOCX HTML extraction:**
 
-DOCX text is extracted client-side using the `mammoth` library at upload time and stored directly in the `content_text` column. No Edge Function call is required for text extraction. The extraction handles three asset formats:
+DOCX content is extracted client-side using `mammoth.convertToHtml()` (not `extractRawText`) which preserves document structure: headings, paragraphs, numbered lists, bold, italic, indentation, and tables. The extracted HTML is stored in the `content_text` column — no schema change required, the column already holds text.
+
+The extraction handles three asset formats:
 
 - Web `File` object (`asset.file.arrayBuffer()`)
 - Base64 data URI (`asset.uri` starts with `data:`)
 - Native file URI (fetched via `fetch(asset.uri).arrayBuffer()`)
 
+Legacy plain-text records are detected via `isHtmlContent()` (checks if content starts with `<`) — if content does not start with `<`, it is rendered through the `normaliseDocxText()` fallback which preserves plain text display.
+
 If a legacy `toolbox_talks` record has `content_type = 'docx'` but `content_text` is null, the viewer shows: *"Document text not available — tap View as PDF to open the original file."* — never an infinite spinner.
+
+The `maxHeight` and `overflowY` constraints have been removed from the DOCX div so the outer React Native `ScrollView` handles scrolling — this allows scroll-to-bottom read tracking to fire correctly via `onScroll`.
 
 **Read tracking:**
 
-Read is recorded (`toolbox_talk_reads` INSERT) when either:
-- The `ScrollView` containing the talk content is scrolled to within 50px of the bottom, OR
-- The user taps "View as PDF ↗" (opens via `Linking.openURL`).
+Read is recorded (`toolbox_talk_reads` INSERT) via the outer `ScrollView`'s `onScroll` handler — the DOCX div no longer scrolls internally, so all scroll events bubble up:
 
-Once recorded, `myRead` state is set locally and the read banner + Sign Off button appear immediately without waiting for a page reload.
+- Triggered when `layoutMeasurement.height + contentOffset.y >= contentSize.height - 50`
+- `setMyRead(true)` is called immediately on detection — the Sign Off button appears instantly without waiting for the database round-trip
+- DB insert runs in the background; unique constraint code `23505` is ignored as expected
+- For DOCX content where the rendered HTML fits entirely on screen without scrolling, the read is marked immediately on render so the user is not gated behind an impossible scroll
+- A `myReadRef` is used in scroll handlers to avoid React closure stale-state bugs
+- Tapping "View as PDF ↗" also records read via the existing `recordRead()` function
 
 ---
 
@@ -450,6 +459,16 @@ The Edge Function:
 - The Edge Function must be manually deployed: `supabase functions deploy generate-signoff`.
 - CORS headers are required on the Edge Function response for web client invocation (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Headers: authorization, content-type`).
 - The function is invoked via `supabase.functions.invoke('generate-signoff', { body: { talk_id } })` with the user's session token in the `Authorization` header.
+
+**Sign-off page column layout:**
+
+The sign-off page table columns are explicitly positioned:
+- Name at x = 50
+- Role at x = 200
+- Company at x = 320
+- Signed At at x = 450 — contains the drawn signature image (100×35px) above a timestamp formatted as `DD MMM YYYY, HH:MM` (24-hour) using `toLocaleString('en-GB')`
+
+Each row is 60px tall to accommodate the signature image plus the timestamp. Text fields are truncated to fit within their column widths to prevent overflow.
 
 After generation, the user is navigated to the Archive screen to view the completed sign-off PDF.
 
@@ -556,6 +575,14 @@ The `pg_cron` extension must be enabled in **Database → Extensions** in the Su
 - Sets `toolbox_talk_library.is_archived = true` — never a hard delete.
 - Existing `toolbox_talks` records that reference the library entry remain fully functional and unaffected.
 
+#### Delete from Archive
+
+- `appointed_person` and `crane_supervisor` can delete any talk from the Archive screen.
+- Sets `toolbox_talks.status = 'deleted'` — never a hard delete.
+- The talk disappears from the archive list immediately on success.
+- Confirmation prompt before deletion (platform-aware: `window.confirm` on web, `Alert.alert` on native).
+- Useful for removing accidental duplicates or test entries from the historical record.
+
 #### Duplicate Prevention
 
 - On upload, before inserting a new library record, the system queries `toolbox_talk_library` for any non-archived entry with the same title (case-insensitive via `.ilike`) in the same company.
@@ -603,6 +630,19 @@ The function requires `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` environment
 
 #### pg_cron Extension
 Enable in **Database → Extensions** to activate the 18:00 auto-archive job.
+
+---
+
+### 9.15 Edge Function Deployment via Dashboard
+
+If the project owner cannot share their Supabase login or CLI access, Edge Functions can be deployed via the web dashboard:
+
+1. Open the project at `https://supabase.com/dashboard/project/{project-ref}/functions`
+2. Open the function (e.g. `generate-signoff`) in the dashboard editor
+3. Paste the contents of the local file from `supabase/functions/{name}/index.ts`
+4. Click **Deploy**
+
+No CLI required. This is the recommended approach when multiple developers work on the project but only one owns the Supabase project.
 
 ---
 
