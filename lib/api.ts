@@ -39,6 +39,25 @@ export async function callGenerateSignOff(
   }
 }
 
+export async function callDailyBriefingGeneratePdf(
+  briefingId?: string
+): Promise<{ error: string | null }> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    const { data, error } = await supabase.functions.invoke('daily-briefing-generate-pdf', {
+      body: briefingId ? { briefing_id: briefingId } : {},
+      headers: session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` }
+        : undefined,
+    })
+    if (data?.error) return { error: data.error }
+    if (error) return { error: error.message }
+    return { error: null }
+  } catch (err: any) {
+    return { error: err?.message ?? 'Failed to generate daily briefing archive' }
+  }
+}
+
 export async function callCreateUser(params: {
   full_name: string
   email: string

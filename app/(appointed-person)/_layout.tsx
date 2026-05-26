@@ -22,7 +22,10 @@ export default function AppointedPersonLayout() {
       <Stack.Screen name="crane-logs/[id]" options={{ title: 'Log Detail' }} />
       <Stack.Screen name="crane-logs/open" options={{ title: 'Open Log' }} />
       <Stack.Screen name="crane-schedule" options={{ title: 'Crane Schedule' }} />
-      <Stack.Screen name="daily-briefing" options={{ title: 'Daily Briefing' }} />
+      <Stack.Screen name="daily-briefing/index" options={{ title: 'Daily Briefing' }} />
+      <Stack.Screen name="daily-briefing/setup" options={{ title: 'Set Up Briefing' }} />
+      <Stack.Screen name="daily-briefing/sign" options={{ title: 'Sign Briefing', presentation: 'modal' }} />
+      <Stack.Screen name="daily-briefing/attendance" options={{ title: 'Who Signed', presentation: 'modal' }} />
       <Stack.Screen name="toolbox-talk/index" options={{ title: 'Toolbox Talk' }} />
       <Stack.Screen name="toolbox-talk/library" options={{ title: 'Talk Library' }} />
       <Stack.Screen name="toolbox-talk/attendance" options={{ title: 'Attendance', presentation: 'modal' }} />

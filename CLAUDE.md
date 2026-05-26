@@ -302,14 +302,14 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 
 ## 8. Current Build Status
 
-> Last updated: 2026-05-20
+> Last updated: 2026-05-26
 
 | Feature | Status | Detail |
 |---|---|---|
 | **Crane Logs** | Built & Working | Open/close logs, edit while open, filter by crane/status/date/open-closed, analytics screen with subcontractor usage breakdown and date-range filters |
 | **Crane Schedule** | Built & Working | Subcontractor crane booking requests, appointed person approval flow |
 | **Toolbox Talk** | Built & Working | Upload PDF or Word file from device with client-side HTML extraction (mammoth convertToHtml), auto-saves to company library with duplicate detection, embedded inline viewer for PDF (iframe on web, native button on mobile to open externally) and DOCX (rendered as styled HTML preserving headings, lists, tables), scroll-to-bottom on outer ScrollView marks read instantly, drawn signature (HTML5 canvas on web, react-native-signature-canvas on native), Attendance modal showing Read + Signed in real time via Supabase Realtime, delete active talk + delete library entries + delete archived talks (all soft-delete via status flags), Generate Sign-Off Edge Function builds combined PDF with correctly-aligned columns (Name, Role, Company, Signed At with signature image and timestamp), auto-archive at 18:00 via pg_cron |
-| **Daily Briefing** | Placeholder | Shell screen only — not yet built |
+| **Daily Briefing** | Built & Working | Per-site daily safety briefing. Set Up form (AP/supervisor only) with Weather Forecast (daily reset), Site Details + Any Other Business + Lifting Schedule + First Aider/Muster Point (persistent), Yes/No checklist (9 questions), AP/supervisor signature on submission. Document assembled as HTML using mixed dynamic + boilerplate template, embedded inline on home page like Toolbox Talk. Bar chart showing operatives signed per company. Scroll-to-bottom read tracking, drawn signature canvas, Attendance modal with live Read + Signed counts. Auto-archive at 18:00 via pg_cron or manual generate, produces multi-page PDF with attendees table + briefing content + AP sign-off page using pdf-lib Edge Function |
 | **LOLER Register** | Placeholder | Shell screen only — not yet built |
 | **Supervisor Checks** | Placeholder | Shell screen only — not yet built |
 | **Operator Checks** | Placeholder | Shell screen only — not yet built |
@@ -646,7 +646,432 @@ No CLI required. This is the recommended approach when multiple developers work 
 
 ---
 
-## 10. MEWP Inventory Module
+## 10. Daily Briefing
+
+---
+
+### 10.1 Overview
+
+The Daily Briefing feature delivers a morning safety briefing for crane and lifting operations on site. Each day, the `appointed_person` or `crane_supervisor` completes a Set Up form covering the weather forecast, site conditions, lifting schedule, and a 9-question yes/no safety checklist. Submitting the form assembles a full HTML briefing document and makes it available to all site operatives to read and sign.
+
+**Daily lifecycle:**
+1. AP or supervisor opens the Set Up form and fills in the day's details.
+2. The completed briefing document is embedded inline on the home screen for all operatives.
+3. Operatives scroll to the bottom (read tracking) and tap **Sign Off** to draw their signature.
+4. AP or supervisor can monitor attendance via the **Who Signed** modal with live Realtime updates.
+5. At 18:00 daily, the briefing is automatically archived via `pg_cron` — or the AP can trigger archiving manually via the **Generate Archive PDF** button, which produces a multi-page PDF and marks the briefing as archived.
+
+Each site has **one active briefing per day**. Enforced by a partial unique index on `(site_id, briefing_date) WHERE status = 'active'`. Soft-delete only — no records are ever hard-deleted.
+
+**Persistent settings:** Site Details, First Aider/Muster Point, Any Other Business, and Lifting Schedule are stored in `daily_briefing_settings` (one row per site) and pre-filled each day. Weather Forecast and the 9-question checklist reset each day.
+
+---
+
+### 10.2 Roles & Permissions
+
+| Role | Permissions |
+|---|---|
+| `appointed_person` | Set Up briefing, edit briefing (within the day), view Who Signed, generate archive PDF, delete active briefing |
+| `crane_supervisor` | Set Up briefing, edit briefing (within the day), view Who Signed, generate archive PDF, delete active briefing |
+| `crane_operator` | Read active briefing, sign active briefing |
+| `slinger_signaller` | Read active briefing, sign active briefing |
+| `subcontractor_admin` | Read active briefing, sign active briefing |
+
+---
+
+### 10.3 Screens
+
+| Screen | Path | Description |
+|---|---|---|
+| Home | `/(appointed-person)/daily-briefing/` | Bar chart, Set Up / Who Signed buttons, Muster Point + First Aider cards, inline briefing document, fixed Sign Off bar |
+| Set Up | `/(appointed-person)/daily-briefing/setup` | Multi-section form to create or edit today's briefing |
+| Sign | `/(appointed-person)/daily-briefing/sign` | Drawn signature modal — presented as a stack screen with `presentation: 'modal'` |
+| Attendance | `/(appointed-person)/daily-briefing/attendance` | Who Signed modal showing Read + Signed per operative, live via Supabase Realtime |
+
+All four routes are registered in `app/(appointed-person)/_layout.tsx`.
+
+---
+
+### 10.4 Home Screen Layout
+
+The home screen is the central view for all roles. It refreshes on focus via `useFocusEffect`.
+
+**Top section — two columns:**
+- Left (flex:3): Bar chart card showing Total Operatives vs. Operatives Signed, grouped by company (see Section 10.8).
+- Right (flex:2): Action column with **Set Up** button (AP/supervisor only) and **Who Signed** button (AP/supervisor only).
+
+**Info row — two cards side by side:**
+- **Muster Point** card (blue left border): displays `daily_briefing_settings.muster_point` for the site.
+- **First Aider** card (amber left border): displays `daily_briefing_settings.first_aider_name` for the site.
+
+**Document area:**
+- If no active briefing exists: prompt to set up today's briefing (AP/supervisor) or message that no briefing has been set up yet (other roles).
+- If an active briefing exists: the full `content_html` is rendered inline using the same HTML viewer pattern as Toolbox Talk DOCX content — `dangerouslySetInnerHTML` on web, `WebView` with a full HTML shell on native.
+- The outer `ScrollView` handles all scrolling — the briefing div has no internal scroll.
+
+**Fixed bottom bar:**
+- If not yet read: "Scroll to the bottom to unlock sign-off" message.
+- If read but not signed: **Sign Off** button → navigates to `/(appointed-person)/daily-briefing/sign?briefing_id={id}`.
+- If already signed: **Signed ✓** badge (green, non-interactive).
+- Delete button (AP/supervisor only, soft-delete with confirmation).
+
+---
+
+### 10.5 Set Up Form
+
+File: `app/(appointed-person)/daily-briefing/setup.tsx`
+
+The Set Up form is a single scrollable screen with six sections. On load, if today's active briefing already exists, the form pre-fills from that briefing (edit mode). Otherwise, persistent fields are pre-filled from `daily_briefing_settings` and weather/checklist fields start blank.
+
+**Edit mode** is detected by checking for a `briefing_id` URL param OR querying for today's active briefing on load. An edit mode banner is shown at the top of the form.
+
+After successful submission the screen navigates to `router.replace('/(appointed-person)/daily-briefing/')`.
+
+#### Section 1 — Weather Forecast *(resets daily)*
+| Field | Type |
+|---|---|
+| Wind Speed | Text input (e.g. "12 km/h") |
+| Gust Speed | Text input (e.g. "18 km/h") |
+| Weather Condition | Text input (e.g. "Partly cloudy, 14°C") |
+
+#### Section 2 — Site Details *(persistent)*
+| Field | Type |
+|---|---|
+| Changes on Site | Multi-line text (layout changes, new restrictions, new starters, etc.) |
+| Lifting Schedule | Multi-line text (details of planned lifts for the day) |
+
+#### Section 3 — Any Other Business *(persistent)*
+| Field | Type |
+|---|---|
+| Any Other Business | Multi-line text |
+
+#### Section 4 — First Aider / Muster Point *(persistent)*
+| Field | Type |
+|---|---|
+| First Aider Name | Text input |
+| Site Location | Text input (location of first aider on site) |
+| Muster Point Location | Text input |
+
+#### Section 5 — Have You Covered the Following? *(resets daily)*
+Nine yes/no toggle questions. Each answer is stored as a boolean on the `daily_briefings` record. Toggle buttons render green **YES** / red **NO**.
+
+| # | Question |
+|---|---|
+| 1 | Is everyone clear on which crane they are responsible for? |
+| 2 | Are all activities planned? |
+| 3 | Are all expected deliveries scheduled? |
+| 4 | Have you communicated any site / environmental changes? |
+| 5 | Have you reminded everyone to carry out the daily pre-use accessory checks? |
+| 6 | Is everyone clear on 'Safety First', if unsure stop the lifting operation and re-assess? |
+| 7 | Is tower crane secured each floor for unauthorised personnel to access the crane? |
+| 8 | Do all Slinger/Crane Supervisor have handheld Whistles and checked they are working? |
+| 9 | Has a radio check been completed for all lifting operatives? |
+
+All nine questions must be answered before the form can be submitted.
+
+#### Section 6 — AP and Supervisors *(filled each day)*
+| Field | Type |
+|---|---|
+| Appointed Person Name | Text input — pre-filled from profile |
+| Lifting Supervisor Name | Text input |
+| Your Name | Text input — pre-filled from profile (the person submitting) |
+| Signature | Drawn signature canvas (embedded inline in the form) |
+
+**Embedded signature canvas behaviour:**
+- On web: custom HTML5 canvas component (`WebSignatureCanvas`) embedded inside the ScrollView.
+- On native: `react-native-signature-canvas` (`NativeSignatureCanvas`) with hidden footer CSS, embedded inside a fixed-height container inside the ScrollView. A `submittingViaSignatureRef` ref prevents the `onOK` callback from triggering submission prematurely — `onOK` only calls `doSubmit(sig)` when the submit button has set `submittingViaSignatureRef.current = true`.
+
+**Submit flow (`doSubmit`):**
+1. Validate all required fields (returns array of error strings).
+2. Upload signature PNG to `daily-briefing-signatures` bucket at `setup/{site_id}/{today_date}_submitter.png` (upsert:true).
+3. Call `buildBriefingHtml(data)` from `lib/daily-briefing-template.ts` to assemble `content_html`.
+4. INSERT or UPDATE `daily_briefings` record.
+5. UPSERT `daily_briefing_settings` with the persistent fields (`onConflict: 'site_id'`).
+6. Navigate to home screen.
+
+---
+
+### 10.6 Document Rendering
+
+The briefing document is assembled as a single HTML string by `buildBriefingHtml(data: BriefingTemplateData)` in `lib/daily-briefing-template.ts`. This function is the **single source of truth** for all HTML structure and boilerplate text in the briefing document. Never scatter briefing HTML across screen files.
+
+**Template sections:**
+1. Risk Statement (fixed boilerplate paragraph)
+2. Part 1 — Forecast (dynamic: wind speed, gust speed, weather condition)
+3. Part 2 — Site Details (dynamic: first aider, location, muster point)
+4. Changes (dynamic: `changes_on_site` free text)
+5. Wind Speed Limits by Load Type (fixed boilerplate table — see Section 10.13)
+6. Lifting Protocols (fixed boilerplate list — see Section 10.13)
+7. Lifting Calculation Example (fixed boilerplate — see Section 10.13)
+8. Any Other Business (dynamic free text)
+9. Lifting Schedule (dynamic free text)
+10. Reporting of Defects and Incidents (fixed boilerplate — see Section 10.13)
+11. Have You Covered the Following? (dynamic: 9 yes/no answers rendered as coloured YES ✓ / NO ✗)
+12. Appointed Person / Lifting Supervisor table (dynamic: AP name, supervisor name, date)
+
+The assembled HTML is stored in `daily_briefings.content_html` and never regenerated at read time.
+
+**Platform rendering:**
+- **Web:** injected via `dangerouslySetInnerHTML={{ __html: briefing.content_html }}` inside a `<div>`. `DAILY_BRIEFING_CONTENT_STYLES` from `lib/daily-briefing-template.ts` is injected into the document `<head>` to style the `.daily-briefing-content` class.
+- **Native:** wrapped in a full HTML shell with `DAILY_BRIEFING_NATIVE_STYLES` inlined in the `<style>` tag, rendered inside a `WebView` with `scrollEnabled={false}` (outer `ScrollView` handles scrolling).
+
+**Scroll tracking:** same pattern as Toolbox Talk DOCX — the outer `ScrollView`'s `onScroll` handler detects `layoutMeasurement.height + contentOffset.y >= contentSize.height - 50` and records the read. `myReadRef` is used to avoid React closure stale-state bugs. If the briefing content fits entirely on screen without scrolling, the read is marked immediately on render.
+
+---
+
+### 10.7 Read Tracking + Signing
+
+**Read tracking:**
+- Scroll-to-bottom on the outer `ScrollView` triggers an INSERT into `daily_briefing_reads(briefing_id, user_id)`.
+- `setMyRead(true)` fires immediately on detection — the Sign Off button appears without waiting for the DB round-trip.
+- Unique constraint `(briefing_id, user_id)` — duplicate inserts return `23505` which is silently ignored.
+- `myReadRef` is used in the `onScroll` handler to avoid stale closure bugs.
+
+**Signing:**
+- Sign screen (`/daily-briefing/sign?briefing_id={id}`) receives `briefing_id` as a URL param.
+- Same drawn signature canvas as Toolbox Talk sign screen — HTML5 canvas on web, `react-native-signature-canvas` on native.
+- Pen colour `#000000`, white background baked in via `destination-over` on web.
+- Signature uploaded to `daily-briefing-signatures` bucket at `{briefing_id}/{user_id}.png` (upsert:true).
+- `daily_briefing_signatures` row inserted with `full_name`, `role`, and `company`:
+  - `company` for `subcontractor_admin`: resolved from their `subcontractor_id` in `profiles` → `subcontractors.name`.
+  - `company` for all other roles: resolved from `profiles.company_id` → `companies.name`.
+- Unique constraint `(briefing_id, user_id)` — if `23505` is returned, "Already Signed" is shown and the user is navigated back.
+- On success: `Alert.alert('Thank You', 'Thank you for signing the daily briefing.')` then `router.replace('/(appointed-person)/daily-briefing/')`.
+- `router.replace` is used so the user cannot navigate back to the sign screen.
+
+---
+
+### 10.8 Bar Chart
+
+The home screen displays a grouped bar chart showing how many operatives from each company have signed the current day's briefing.
+
+**Data assembly:**
+- Fetch all profiles on the site (operative roles only: crane_operator, crane_supervisor, slinger_signaller, subcontractor_admin, appointed_person).
+- For `subcontractor_admin`: resolve company name from `subcontractors` via `profiles.subcontractor_id`.
+- For all other roles: resolve company name from `companies` via `profiles.company_id`.
+- Group operatives by company name → `total` count per company.
+- Cross-reference with `daily_briefing_signatures` for the active briefing → `signed` count per company.
+
+**Rendering:**
+- Custom View-based bar chart — no external charting library.
+- Two bars per group (company): red bar = Total, blue bar = Signed.
+- Bar widths are percentage strings computed as `(value / maxValue) * 100 + '%'` — works on both web and native.
+- Legend: red square = Total Operatives, blue square = Operatives Signed.
+- Chart updates live when `daily_briefing_signatures` receives a Realtime insert.
+
+---
+
+### 10.9 Attendance (Who Signed)
+
+The **Who Signed** button (AP/supervisor only) opens `/(appointed-person)/daily-briefing/attendance?briefing_id={id}` as a modal screen.
+
+**Display:** Two sections — **Read** and **Signed** — each listing operative names with timestamps. Counts shown in section headers: `Read (n)` / `Signed (n)`.
+
+**Real-time updates:** Supabase Realtime subscriptions on both `daily_briefing_reads` and `daily_briefing_signatures` tables, filtered to `briefing_id=eq.{briefing_id}`. All `.on()` calls are chained before the single `.subscribe()` call in one fluent chain — splitting into multiple `.subscribe()` calls causes missed events.
+
+**Generate Archive PDF:** A button at the bottom of the attendance screen calls `callDailyBriefingGeneratePdf(briefingId)` from `lib/api.ts`. On success, navigates to `router.replace('/(appointed-person)/daily-briefing/')`.
+
+**Visibility:** Only `appointed_person` and `crane_supervisor` see the Who Signed button on the home screen. Other roles do not have access to the attendance screen.
+
+---
+
+### 10.10 Auto-Archive and PDF Generation
+
+**Auto-archive:** A `pg_cron` job runs daily at 18:00 (17:00 UTC) and calls the `daily-briefing-generate-pdf` Edge Function for all briefings with `status = 'active'` and `briefing_date = today`. The pg_cron schedule is included as a SQL comment in `supabase/daily_briefing_schema.sql`.
+
+**Manual archive:** AP or supervisor taps **Generate Archive PDF** on the attendance screen (or home screen). This calls `callDailyBriefingGeneratePdf(briefingId)` in `lib/api.ts`, which invokes the `daily-briefing-generate-pdf` Edge Function via `supabase.functions.invoke`.
+
+**Edge Function** (`supabase/functions/daily-briefing-generate-pdf/index.ts`):
+
+The function uses `pdf-lib` (Deno-compatible) and runs the following for each briefing:
+
+1. Fetch `daily_briefings` record including the `sites` join for site name.
+2. Fetch all `daily_briefing_signatures` for the briefing, ordered by `signed_at`.
+3. Build a multi-page PDF:
+   - **Page 1+ — Attendees Table:** navy header bar, date and site name, then one row per signatory with columns: Role / Name / Company / Signature image (embedded PNG/JPG, 100×35px) / Signed At timestamp (`DD MMM YYYY, HH:MM` in en-GB locale). Column x positions: margin=50, +130, +240, +350. Rows are 60pt tall to accommodate signature images.
+   - **Following pages — Briefing Content:** AP name, supervisor name, forecast, site details, any other business, lifting schedule, checklist answers (green YES / red NO text). Logo header on each page.
+   - **Final page — AP Sign-Off:** date, AP name, role, embedded submitter signature image (200×60px).
+4. Storage: `await adminClient.storage.from('daily-briefing-archive').remove([pdfPath])` then `.upload(pdfPath, pdfBytes, { upsert: false })`. Path: `{site_id}/{briefing_id}.pdf`.
+5. Update `daily_briefings`: set `archive_pdf_url = pdfPath`, `status = 'archived'`, `archived_at = new Date().toISOString()`.
+
+**Cron mode vs. single mode:** If called without a `briefing_id` body param, the function queries all active briefings for today and processes each one. If called with `briefing_id`, it processes only that briefing.
+
+---
+
+### 10.11 Database Schema
+
+Run `supabase/daily_briefing_schema.sql` in the Supabase SQL Editor to create all tables and indexes.
+
+#### `daily_briefing_settings`
+One row per site. Created on first Set Up submission via UPSERT (`onConflict: 'site_id'`).
+
+| column | type | notes |
+|---|---|---|
+| site_id | uuid PK → sites | One row per site |
+| changes_on_site | text | Persistent — pre-filled each day |
+| lifting_schedule | text | Persistent — pre-filled each day |
+| any_other_business | text | Persistent — pre-filled each day |
+| first_aider_name | text | Persistent — pre-filled each day |
+| site_location | text | Persistent — pre-filled each day |
+| muster_point | text | Persistent — pre-filled each day |
+| updated_at | timestamptz | default now() |
+| updated_by | uuid FK → profiles | nullable |
+
+#### `daily_briefings`
+One active briefing per site per day, enforced by partial unique index.
+
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| site_id | uuid FK → sites | |
+| briefing_date | date | default current_date |
+| wind_speed | text | Daily — Weather Forecast |
+| gust_speed | text | Daily — Weather Forecast |
+| weather_condition | text | Daily — Weather Forecast |
+| changes_on_site | text | Snapshot of persistent field at time of submission |
+| lifting_schedule | text | Snapshot of persistent field at time of submission |
+| any_other_business | text | Snapshot of persistent field at time of submission |
+| first_aider_name | text | Snapshot of persistent field at time of submission |
+| site_location | text | Snapshot of persistent field at time of submission |
+| muster_point | text | Snapshot of persistent field at time of submission |
+| q1_crane_clear | boolean | Daily checklist answers |
+| q2_activities_planned | boolean | |
+| q3_deliveries_scheduled | boolean | |
+| q4_changes_communicated | boolean | |
+| q5_accessory_checks | boolean | |
+| q6_safety_first | boolean | |
+| q7_crane_secured | boolean | |
+| q8_whistles_working | boolean | |
+| q9_radio_check | boolean | |
+| ap_name | text | not null |
+| supervisor_name | text | not null |
+| submitter_name | text | not null |
+| submitter_signature_url | text | Storage path in `daily-briefing-signatures` bucket |
+| content_html | text | Full assembled HTML — not null |
+| archive_pdf_url | text | Storage path in `daily-briefing-archive` bucket — set on archive |
+| status | text | CHECK IN ('active', 'archived', 'deleted') default 'active' |
+| created_by | uuid FK → profiles | not null |
+| created_at | timestamptz | default now() |
+| archived_at | timestamptz | Set when status changes to 'archived' |
+
+**Partial unique index:** `daily_briefings_site_date_active ON daily_briefings(site_id, briefing_date) WHERE (status = 'active')` — prevents two active briefings for the same site on the same day.
+
+> **Status values:** `active` = today's live briefing; `archived` = PDF generated, read-only; `deleted` = soft-deleted by AP or supervisor.
+
+#### `daily_briefing_reads`
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| briefing_id | uuid FK → daily_briefings | |
+| user_id | uuid FK → profiles | |
+| read_at | timestamptz | default now() |
+
+**UNIQUE constraint:** `(briefing_id, user_id)` — one read record per user per briefing.
+
+#### `daily_briefing_signatures`
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| briefing_id | uuid FK → daily_briefings | |
+| user_id | uuid FK → profiles | |
+| full_name | text | Denormalised from profiles at sign time |
+| role | text | Denormalised from auth context at sign time |
+| company | text | Subcontractor company name for subcontractor_admin; site company for all others |
+| signature_image_url | text | Storage path in `daily-briefing-signatures` bucket |
+| signed_at | timestamptz | default now() |
+
+**UNIQUE constraint:** `(briefing_id, user_id)` — one signature record per user per briefing.
+
+---
+
+### 10.12 Required Supabase Setup
+
+The following must be configured in the Supabase Dashboard **before** the Daily Briefing feature will work. None of these are applied automatically.
+
+#### Database Tables
+Run `supabase/daily_briefing_schema.sql` in the SQL Editor. This creates all four tables, RLS policies, the partial unique index, and supporting indexes.
+
+#### Storage Buckets
+Create two **private** buckets:
+
+| Bucket | Size limit | Allowed MIME types |
+|---|---|---|
+| `daily-briefing-signatures` | 5 MB | `image/png` |
+| `daily-briefing-archive` | 50 MB | `application/pdf` |
+
+#### Storage RLS Policies
+For both buckets, add policies allowing:
+- **INSERT:** `authenticated` role
+- **SELECT:** `authenticated` role (signed URLs used at read time)
+
+#### Edge Function Deployment
+Deploy the archive PDF generator:
+```
+supabase functions deploy daily-briefing-generate-pdf
+```
+Or paste `supabase/functions/daily-briefing-generate-pdf/index.ts` into the Supabase Dashboard → Functions editor and click **Deploy**.
+
+The function requires `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` environment variables set in Dashboard → Edge Functions → Secrets.
+
+#### pg_cron Extension
+Enable in **Database → Extensions**. Then register the schedule (SQL commented at the bottom of `supabase/daily_briefing_schema.sql`):
+```sql
+select cron.schedule(
+  'daily-briefing-auto-archive',
+  '0 17 * * *',
+  $$ select net.http_post(
+    url := 'https://<project-ref>.supabase.co/functions/v1/daily-briefing-generate-pdf',
+    headers := '{"Authorization": "Bearer <service_role_key>", "Content-Type": "application/json"}'::jsonb
+  ) as request_id $$
+);
+```
+
+---
+
+### 10.13 Boilerplate Text Content
+
+All static boilerplate text is defined in `lib/daily-briefing-template.ts` as private constants. Edit in one place — never duplicate in screen files or the Edge Function.
+
+#### Wind Speed Limits by Load Type (`WIND_SPEED_TABLE`)
+| Load Type | Max Wind Speed |
+|---|---|
+| Concrete Skip | 55 km/h |
+| Re-bar lorry | 55 km/h |
+| Column Shutters | 35.4 km/h |
+| Open Stillage | 31 mph / 51 km/h |
+| Plywood | 27 mph |
+| Boat Skip | 55 km/h |
+| Toolbox | 55 km/h |
+| MEWP | 29 mph |
+| Formwork Primary Beams | 55 km/h |
+| Water Bouser | 51.4 km/h |
+
+#### Lifting Protocols (`LIFTING_PROTOCOLS_LIST`)
+- All lifting as per Subcontractor Lift Plan
+- **DO NOT LIFT** loads not included in today's schedule without authorisation
+- DAILY SMIE AND ZONING CHECKS must be completed before any lifting commences
+- **NO MOBILE PHONES** while operating or signalling
+- CHECKSHEETS MUST BE COMPLETED CORRECTLY and returned to the Appointed Person
+- RESPECT THE WELFARE FACILITIES — keep areas clean and tidy
+- Confirm Whistles are working before commencing operations
+- CONSTANT CLEAR COMMUNICATION during all blind lifts — use radio at all times
+- ENSURE DAILY ZONING AND ANTI-COLLISION CHECKS are completed on all cranes before operation
+
+#### Lifting Calculation Example (`LIFTING_CALCULATION_TEXT`)
+Example illustrating how to calculate combined SWL for 2- and 3-point lifts using mode factors. Uses a 4te SWL webbing sling choked (−20%) as the worked example: 3.2te × 1.4 mode factor = **4.48te SWL** (2-point @<90°); 3.2te × 2.1 mode factor = **6.72te SWL** (3- or 4-point @<90°).
+
+#### Defects and Incidents Procedure (`DEFECTS_AND_INCIDENTS_TEXT`)
+Six mandatory reporting categories:
+- (a) Any defects found during daily and weekly checks.
+- (b) Defects found at any other time.
+- (c) Incidents, accidents or near misses however slight.
+- (d) Shock loads, however they occur.
+- (e) Dangerous occurrence and reportable accidents.
+- (f) Report any radio communication issues to the principal contractor.
+
+---
+
+## 11. MEWP Inventory Module
 
 The MEWP module is built **inside the Lifting App** as native screens using Expo Router.
 It shares the same Supabase project, auth system, and existing tables (sites, subcontractors, profiles).
@@ -656,7 +1081,7 @@ MEWP = Mobile Elevated Work Platform (Pecolift, Scissor Lift, Boom Lift, Cherry 
 
 ---
 
-### 10.1 Architecture
+### 11.1 Architecture
 
 The MEWP module is built **inside the Lifting App** as native screens using Expo Router.
 It is NOT a separate Next.js project.
@@ -679,7 +1104,7 @@ npm install pdf-lib signature_pad qrcode mammoth
 
 ---
 
-### 10.2 Roles & Permissions
+### 11.2 Roles & Permissions
 
 ```
 main_admin
@@ -700,7 +1125,7 @@ main_admin
 
 ---
 
-### 10.3 MEWP Lifecycle & Fields
+### 11.3 MEWP Lifecycle & Fields
 
 ```
 Subcontractor delivers MEWP
@@ -731,7 +1156,7 @@ Subcontractor collects MEWP → subcontractor_admin removes it from site
 
 ---
 
-### 10.4 Thorough Examination & Status Logic
+### 11.4 Thorough Examination & Status Logic
 
 - Uploaded as a **photo or PDF document** by `site_admin` or `subcontractor_admin`.
 - Has an **expiry date** set manually at time of upload.
@@ -745,7 +1170,7 @@ Status is calculated from `thorough_exam_expiry` — never stored, always derive
 
 ---
 
-### 10.5 Screens
+### 11.5 Screens
 
 #### MEWP Inventory Screen
 
@@ -789,7 +1214,7 @@ Shows all MEWP fields plus:
 
 ---
 
-### 10.6 Daily Check
+### 11.6 Daily Check
 
 - Done by **anyone** — no login required.
 - Triggered by scanning the QR code or NFC tag on the MEWP.
@@ -798,7 +1223,7 @@ Shows all MEWP fields plus:
 
 ---
 
-### 10.7 Spot Check
+### 11.7 Spot Check
 
 - Done by **anyone** — no login required via QR/NFC scan, or from web by `site_admin` and `subcontractor_admin`.
 - Can be done at any time (not limited to once per day).
@@ -831,7 +1256,7 @@ Shows all MEWP fields plus:
 
 ---
 
-### 10.8 Public MEWP Page (QR/NFC Scan — no login required)
+### 11.8 Public MEWP Page (QR/NFC Scan — no login required)
 
 When anyone scans the QR code or NFC tag on a MEWP, they see:
 
@@ -843,7 +1268,7 @@ When anyone scans the QR code or NFC tag on a MEWP, they see:
 
 ---
 
-### 10.9 Screen Structure (inside lifting-app)
+### 11.9 Screen Structure (inside lifting-app)
 
 ```
 app/
@@ -872,7 +1297,7 @@ public/
 
 ---
 
-### 10.10 Supabase Tables (MEWP module)
+### 11.10 Supabase Tables (MEWP module)
 
 These tables are **prefixed with `mewp_`** to avoid collision with Lifting App tables.
 
@@ -1024,7 +1449,7 @@ These tables are **prefixed with `mewp_`** to avoid collision with Lifting App t
 
 ---
 
-### 10.11 Supabase Views & RPCs
+### 11.11 Supabase Views & RPCs
 
 **Views:**
 
@@ -1052,7 +1477,7 @@ Uses INSERT ... ON CONFLICT DO NOTHING then SELECT.
 
 ---
 
-### 10.12 Supabase Storage Buckets
+### 11.12 Supabase Storage Buckets
 
 All buckets are **public** (public read).
 
@@ -1066,7 +1491,7 @@ All buckets are **public** (public read).
 
 ---
 
-### 10.13 Authentication (MEWP module)
+### 11.13 Authentication (MEWP module)
 
 **Public pages (no login):**
 - `/check/[mewpId]` — worker inspection form, fully public
@@ -1081,7 +1506,7 @@ Users are managed via the shared `profiles` table. No separate user table for ME
 
 ---
 
-### 10.14 All 43 Inspection Items
+### 11.14 All 43 Inspection Items
 
 #### Visual Checks (items 1–28, single PASS/FAIL/N/A)
 
@@ -1150,7 +1575,7 @@ Users are managed via the shared `profiles` table. No separate user table for ME
 
 ---
 
-### 10.15 Daily Inspection Form
+### 11.15 Daily Inspection Form
 
 File: `app/(mewp)/check/[mewpId].tsx`
 
@@ -1194,7 +1619,7 @@ if (entryId) await supabase.from("mewp_daily_entries").delete().eq("id", entryId
 
 ---
 
-### 10.16 PDF Generation
+### 11.16 PDF Generation
 
 **Library:** `pdf-lib` v1.17.1 — pure JS, works server-side in API routes.
 
@@ -1243,7 +1668,7 @@ await supabase.storage.from("mewp-weekly-reports").upload(filePath, pdfBuffer, {
 
 ---
 
-### 10.17 Critical Workarounds (do not skip)
+### 11.17 Critical Workarounds (do not skip)
 
 **1. Signature captured before state change**
 Read `sigPadRef.current` BEFORE calling `setPageStatus("submitting")` — the state change unmounts the canvas and nulls the ref.
@@ -1310,7 +1735,7 @@ function normDay(val) { return val ? DAY_NORM[String(val).toLowerCase()] ?? null
 
 ---
 
-### 10.18 RLS Policy Summary (MEWP tables)
+### 11.18 RLS Policy Summary (MEWP tables)
 
 - `mewp_sites`: public SELECT, service role INSERT/UPDATE
 - `mewp_machines`: public SELECT, service role INSERT/UPDATE
@@ -1329,7 +1754,7 @@ function normDay(val) { return val ? DAY_NORM[String(val).toLowerCase()] ?? null
 
 ---
 
-### 10.19 Still To Build
+### 11.19 Still To Build
 
 1. **Weekly Sunday auto-archive** — Supabase Edge Function running at 23:59 every Sunday, calling generateReport for all MEWPs with activity that week
 2. **Defect management** — site admins mark defects as repaired, add engineer name and date
@@ -1338,7 +1763,7 @@ function normDay(val) { return val ? DAY_NORM[String(val).toLowerCase()] ?? null
 
 ---
 
-### 10.20 Deployment
+### 11.20 Deployment
 
 - **Host:** Vercel (auto-deploy on push to main)
 - **Subdomain:** `mewps.liftingmanagement.com`
