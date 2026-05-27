@@ -302,14 +302,14 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 
 ## 8. Current Build Status
 
-> Last updated: 2026-05-26
+> Last updated: 2026-05-27
 
 | Feature | Status | Detail |
 |---|---|---|
 | **Crane Logs** | Built & Working | Open/close logs, edit while open, filter by crane/status/date/open-closed, analytics screen with subcontractor usage breakdown and date-range filters |
 | **Crane Schedule** | Built & Working | Subcontractor crane booking requests, appointed person approval flow |
 | **Toolbox Talk** | Built & Working | Upload PDF or Word file from device with client-side HTML extraction (mammoth convertToHtml), auto-saves to company library with duplicate detection, embedded inline viewer for PDF (iframe on web, native button on mobile to open externally) and DOCX (rendered as styled HTML preserving headings, lists, tables), scroll-to-bottom on outer ScrollView marks read instantly, drawn signature (HTML5 canvas on web, react-native-signature-canvas on native), Attendance modal showing Read + Signed in real time via Supabase Realtime, delete active talk + delete library entries + delete archived talks (all soft-delete via status flags), Generate Sign-Off Edge Function builds combined PDF with correctly-aligned columns (Name, Role, Company, Signed At with signature image and timestamp), auto-archive at 18:00 via pg_cron |
-| **Daily Briefing** | Built & Working | Per-site daily safety briefing. Set Up form (AP/supervisor only) with Weather Forecast (daily reset), Site Details + Any Other Business + Lifting Schedule + First Aider/Muster Point (persistent), Yes/No checklist (9 questions), AP/supervisor signature on submission. Document assembled as HTML using mixed dynamic + boilerplate template, embedded inline on home page like Toolbox Talk. Bar chart showing operatives signed per company. Scroll-to-bottom read tracking, drawn signature canvas, Attendance modal with live Read + Signed counts. Auto-archive at 18:00 via pg_cron or manual generate, produces multi-page PDF with attendees table + briefing content + AP sign-off page using pdf-lib Edge Function |
+| **Daily Briefing** | Built & Working | Per-site daily safety briefing with three home-screen action buttons (Set Up, Who Signed, Archive). Set Up form (AP/supervisor only) with Weather Forecast (daily reset), Site Details + Any Other Business + Lifting Schedule + First Aider/Muster Point (persistent), Yes/No checklist (9 questions), AP/supervisor signature on submission. Document assembled as HTML using mixed dynamic + boilerplate template, embedded inline on home page like Toolbox Talk. Bar chart showing operatives signed per company. Scroll-to-bottom read tracking, drawn signature canvas, Attendance modal with live Read + Signed counts. Auto-archive at 18:00 via pg_cron or manual generate, produces multi-page PDF with title header (Daily Briefing — site — day — date), attendees table, briefing content, and AP sign-off page using pdf-lib Edge Function. Archive screen lists all past briefings (visible to all roles, delete restricted to AP/supervisor) |
 | **LOLER Register** | Placeholder | Shell screen only — not yet built |
 | **Supervisor Checks** | Placeholder | Shell screen only — not yet built |
 | **Operator Checks** | Placeholder | Shell screen only — not yet built |
@@ -683,12 +683,13 @@ Each site has **one active briefing per day**. Enforced by a partial unique inde
 
 | Screen | Path | Description |
 |---|---|---|
-| Home | `/(appointed-person)/daily-briefing/` | Bar chart, Set Up / Who Signed buttons, Muster Point + First Aider cards, inline briefing document, fixed Sign Off bar |
+| Home | `/(appointed-person)/daily-briefing/` | Bar chart, Set Up / Who Signed / Archive buttons, Muster Point + First Aider cards, inline briefing document, fixed Sign Off bar |
 | Set Up | `/(appointed-person)/daily-briefing/setup` | Multi-section form to create or edit today's briefing |
 | Sign | `/(appointed-person)/daily-briefing/sign` | Drawn signature modal — presented as a stack screen with `presentation: 'modal'` |
 | Attendance | `/(appointed-person)/daily-briefing/attendance` | Who Signed modal showing Read + Signed per operative, live via Supabase Realtime |
+| Archive | `/(appointed-person)/daily-briefing/archive` | List of all archived briefings with view/delete actions |
 
-All four routes are registered in `app/(appointed-person)/_layout.tsx`.
+All five routes are registered in `app/(appointed-person)/_layout.tsx`.
 
 ---
 
@@ -698,7 +699,10 @@ The home screen is the central view for all roles. It refreshes on focus via `us
 
 **Top section — two columns:**
 - Left (flex:3): Bar chart card showing Total Operatives vs. Operatives Signed, grouped by company (see Section 10.8).
-- Right (flex:2): Action column with **Set Up** button (AP/supervisor only) and **Who Signed** button (AP/supervisor only).
+- Right (flex:2): Action column with three buttons:
+  - **Set Up** button — AP/supervisor only — opens Set Up form
+  - **Who Signed** button — AP/supervisor only — opens Attendance modal
+  - **Archive** button — visible to all roles — opens Archive screen showing all past briefings
 
 **Info row — two cards side by side:**
 - **Muster Point** card (blue left border): displays `daily_briefing_settings.muster_point` for the site.
@@ -800,12 +804,12 @@ The briefing document is assembled as a single HTML string by `buildBriefingHtml
 2. Part 1 — Forecast (dynamic: wind speed, gust speed, weather condition)
 3. Part 2 — Site Details (dynamic: first aider, location, muster point)
 4. Changes (dynamic: `changes_on_site` free text)
-5. Wind Speed Limits by Load Type (fixed boilerplate table — see Section 10.13)
-6. Lifting Protocols (fixed boilerplate list — see Section 10.13)
-7. Lifting Calculation Example (fixed boilerplate — see Section 10.13)
+5. Wind Speed Limits by Load Type (fixed boilerplate table — see Section 10.14)
+6. Lifting Protocols (fixed boilerplate list — see Section 10.14)
+7. Lifting Calculation Example (fixed boilerplate — see Section 10.14)
 8. Any Other Business (dynamic free text)
 9. Lifting Schedule (dynamic free text)
-10. Reporting of Defects and Incidents (fixed boilerplate — see Section 10.13)
+10. Reporting of Defects and Incidents (fixed boilerplate — see Section 10.14)
 11. Have You Covered the Following? (dynamic: 9 yes/no answers rendered as coloured YES ✓ / NO ✗)
 12. Appointed Person / Lifting Supervisor table (dynamic: AP name, supervisor name, date)
 
@@ -888,6 +892,7 @@ The function uses `pdf-lib` (Deno-compatible) and runs the following for each br
 1. Fetch `daily_briefings` record including the `sites` join for site name.
 2. Fetch all `daily_briefing_signatures` for the briefing, ordered by `signed_at`.
 3. Build a multi-page PDF:
+   - **Document title header:** a centred 16pt bold header is drawn at the top of the first page with the title in the format: `Daily Briefing — {site_name} — {day_of_week} — {date}` (e.g. `Daily Briefing — London Wall — Tuesday — 27 May 2026`). `day_of_week` is the full English weekday name; `date` is formatted as `DD MMM YYYY`. The PDF metadata `info.Title` is also set to this title string so it displays correctly when the PDF opens in a browser tab. Site name is resolved via the `sites` join on the `daily_briefings` record.
    - **Page 1+ — Attendees Table:** navy header bar, date and site name, then one row per signatory with columns: Role / Name / Company / Signature image (embedded PNG/JPG, 100×35px) / Signed At timestamp (`DD MMM YYYY, HH:MM` in en-GB locale). Column x positions: margin=50, +130, +240, +350. Rows are 60pt tall to accommodate signature images.
    - **Following pages — Briefing Content:** AP name, supervisor name, forecast, site details, any other business, lifting schedule, checklist answers (green YES / red NO text). Logo header on each page.
    - **Final page — AP Sign-Off:** date, AP name, role, embedded submitter signature image (200×60px).
@@ -1013,6 +1018,8 @@ Or paste `supabase/functions/daily-briefing-generate-pdf/index.ts` into the Supa
 
 The function requires `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` environment variables set in Dashboard → Edge Functions → Secrets.
 
+> **⚠️ Deployment naming warning:** When deploying Edge Functions via the Supabase Dashboard (no CLI required), you must use the exact function name when creating a new function. Do **NOT** paste code into an existing unrelated function — the function name in the URL must match what the client calls (e.g. `daily-briefing-generate-pdf`, not `swift-responder` or any default name the dashboard generates). To deploy correctly: Dashboard → Edge Functions → **Deploy a new function** → Via Editor → set the function name to `daily-briefing-generate-pdf` → paste code → Deploy.
+
 #### pg_cron Extension
 Enable in **Database → Extensions**. Then register the schedule (SQL commented at the bottom of `supabase/daily_briefing_schema.sql`):
 ```sql
@@ -1028,7 +1035,24 @@ select cron.schedule(
 
 ---
 
-### 10.13 Boilerplate Text Content
+### 10.13 Archive Screen
+
+Visible to **all roles**. Lists all archived daily briefings for the current site where `status = 'archived'` and `archive_pdf_url IS NOT NULL`, ordered most recent first.
+
+**Each card displays:**
+- **Title** in the format: `Daily Briefing — {site_name} — {day_of_week} — {date}`
+  - `day_of_week` is the full English weekday name (e.g. Tuesday)
+  - `date` is formatted as `DD MMM YYYY` (e.g. 27 May 2026)
+  - Example: `Daily Briefing — London Wall — Tuesday — 27 May 2026`
+- **Metadata:** signatory count and archived time (formatted as `DD MMM YYYY, HH:MM`)
+- **View button** — generates a signed URL with a 1-hour expiry and opens the archive PDF (`window.open` on web, `Linking.openURL` on native)
+- **Delete button** — visible only to `appointed_person` and `crane_supervisor` — soft-deletes the briefing by setting `status = 'deleted'`; never hard-deletes. A confirmation prompt is shown before deletion (platform-aware: `window.confirm` on web, `Alert.alert` on native). The card disappears from the list immediately on success.
+
+The Archive screen is accessible to all roles via the **Archive** button on the home screen — no active briefing is required. Other roles (crane_operator, slinger_signaller, subcontractor_admin) have read-only access: they can view PDFs but the Delete button is not shown.
+
+---
+
+### 10.14 Boilerplate Text Content
 
 All static boilerplate text is defined in `lib/daily-briefing-template.ts` as private constants. Edit in one place — never duplicate in screen files or the Edge Function.
 

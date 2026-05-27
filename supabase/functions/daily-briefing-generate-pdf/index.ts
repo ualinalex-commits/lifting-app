@@ -122,7 +122,16 @@ async function processOneBriefing(
 
   const sigs = (signatures as SigRecord[]) ?? []
 
+  // Build document title used in the PDF header and metadata
+  const siteName = briefing.site?.name ?? 'Unknown Site'
+  const dayOfWeek = new Date(briefing.briefing_date + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday: 'long' })
+  const dateFormatted = new Date(briefing.briefing_date + 'T00:00:00Z').toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+  })
+  const docTitle = `Daily Briefing — ${siteName} — ${dayOfWeek} — ${dateFormatted}`
+
   const pdfDoc = await PDFDocument.create()
+  pdfDoc.setTitle(docTitle)
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
@@ -153,7 +162,13 @@ async function processOneBriefing(
   page.drawRectangle({ x: 0, y: pageH - 60, width: pageW, height: 60, color: rgb(0.06, 0.15, 0.26) })
   drawText(page, 'DAILY TEAM BRIEFING: LIFTING OPERATIONS', margin, pageH - 38, 14, true, rgb(1, 1, 1))
 
-  y = pageH - 80
+  // Document title — centred below header bar, 16pt bold
+  const titleFontSize = 16
+  const titleTextWidth = boldFont.widthOfTextAtSize(docTitle, titleFontSize)
+  const titleX = Math.max(margin, (pageW - titleTextWidth) / 2)
+  page.drawText(docTitle, { x: titleX, y: pageH - 82, size: titleFontSize, font: boldFont, color: rgb(0.06, 0.15, 0.26) })
+
+  y = pageH - 108  // shifted down from -80 to accommodate the title above
 
   const dateStr = new Date(briefing.briefing_date + 'T00:00:00Z').toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',

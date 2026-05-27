@@ -435,6 +435,14 @@ export default function DailyBriefingHome() {
                 <Text style={styles.actionBtnLabel}>{'Who\nSigned'}</Text>
               </TouchableOpacity>
             )}
+            <TouchableOpacity
+              style={styles.actionBtn}
+              onPress={() => router.push('/(appointed-person)/daily-briefing/archive' as any)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.actionBtnIcon}>🗂</Text>
+              <Text style={styles.actionBtnLabel}>Archive</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
