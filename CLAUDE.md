@@ -302,14 +302,14 @@ A Crane Log tracks the status and activity of a crane during a shift or operatio
 
 ## 8. Current Build Status
 
-> Last updated: 2026-05-27
+> Last updated: 2026-05-28
 
 | Feature | Status | Detail |
 |---|---|---|
 | **Crane Logs** | Built & Working | Open/close logs, edit while open, filter by crane/status/date/open-closed, analytics screen with subcontractor usage breakdown and date-range filters |
 | **Crane Schedule** | Built & Working | Subcontractor crane booking requests, appointed person approval flow |
 | **Toolbox Talk** | Built & Working | Upload PDF or Word file from device with client-side HTML extraction (mammoth convertToHtml), auto-saves to company library with duplicate detection, embedded inline viewer for PDF (iframe on web, native button on mobile to open externally) and DOCX (rendered as styled HTML preserving headings, lists, tables), scroll-to-bottom on outer ScrollView marks read instantly, drawn signature (HTML5 canvas on web, react-native-signature-canvas on native), Attendance modal showing Read + Signed in real time via Supabase Realtime, delete active talk + delete library entries + delete archived talks (all soft-delete via status flags), Generate Sign-Off Edge Function builds combined PDF with correctly-aligned columns (Name, Role, Company, Signed At with signature image and timestamp), auto-archive at 18:00 via pg_cron |
-| **Daily Briefing** | Built & Working | Per-site daily safety briefing with three home-screen action buttons (Set Up, Who Signed, Archive). Set Up form (AP/supervisor only) with Weather Forecast (daily reset), Site Details + Any Other Business + Lifting Schedule + First Aider/Muster Point (persistent), Yes/No checklist (9 questions), AP/supervisor signature on submission. Document assembled as HTML using mixed dynamic + boilerplate template, embedded inline on home page like Toolbox Talk. Bar chart showing operatives signed per company. Scroll-to-bottom read tracking, drawn signature canvas, Attendance modal with live Read + Signed counts. Auto-archive at 18:00 via pg_cron or manual generate, produces multi-page PDF with title header (Daily Briefing — site — day — date), attendees table, briefing content, and AP sign-off page using pdf-lib Edge Function. Archive screen lists all past briefings (visible to all roles, delete restricted to AP/supervisor) |
+| **Daily Briefing** | Built & Working | Per-site daily safety briefing (Set Up / Who Signed / Archive buttons). Set Up form with daily-reset weather + checklist and persistent site details/schedule/AOB/first-aider fields, creator signature. Document assembled as HTML, embedded inline like Toolbox Talk. Bar chart of operatives signed per company. Scroll-to-bottom read tracking, drawn signature, real-time Attendance. Archive PDF via pdf-lib Edge Function: cover page, full briefing content (all sections + tables rendered as columns), creator sign-off page with real role, attendees signature table last. All text ASCII-sanitised for pdf-lib WinAnsi encoding; HTML entities decoded. Auto-archive at 18:00 via pg_cron or manual generate. Archive screen lists all past PDFs |
 | **LOLER Register** | Placeholder | Shell screen only — not yet built |
 | **Supervisor Checks** | Placeholder | Shell screen only — not yet built |
 | **Operator Checks** | Placeholder | Shell screen only — not yet built |
@@ -804,12 +804,12 @@ The briefing document is assembled as a single HTML string by `buildBriefingHtml
 2. Part 1 — Forecast (dynamic: wind speed, gust speed, weather condition)
 3. Part 2 — Site Details (dynamic: first aider, location, muster point)
 4. Changes (dynamic: `changes_on_site` free text)
-5. Wind Speed Limits by Load Type (fixed boilerplate table — see Section 10.14)
-6. Lifting Protocols (fixed boilerplate list — see Section 10.14)
-7. Lifting Calculation Example (fixed boilerplate — see Section 10.14)
+5. Wind Speed Limits by Load Type (fixed boilerplate table — see Section 10.15)
+6. Lifting Protocols (fixed boilerplate list — see Section 10.15)
+7. Lifting Calculation Example (fixed boilerplate — see Section 10.15)
 8. Any Other Business (dynamic free text)
 9. Lifting Schedule (dynamic free text)
-10. Reporting of Defects and Incidents (fixed boilerplate — see Section 10.14)
+10. Reporting of Defects and Incidents (fixed boilerplate — see Section 10.15)
 11. Have You Covered the Following? (dynamic: 9 yes/no answers rendered as coloured YES ✓ / NO ✗)
 12. Appointed Person / Lifting Supervisor table (dynamic: AP name, supervisor name, date)
 
@@ -887,17 +887,26 @@ The **Who Signed** button (AP/supervisor only) opens `/(appointed-person)/daily-
 
 **Edge Function** (`supabase/functions/daily-briefing-generate-pdf/index.ts`):
 
-The function uses `pdf-lib` (Deno-compatible) and runs the following for each briefing:
+The function uses `pdf-lib` (Deno-compatible) and generates a complete multi-page archive PDF. All text is passed through a `clean()` sanitiser before being drawn — see Section 10.14 for encoding rules.
 
-1. Fetch `daily_briefings` record including the `sites` join for site name.
-2. Fetch all `daily_briefing_signatures` for the briefing, ordered by `signed_at`.
-3. Build a multi-page PDF:
-   - **Document title header:** a centred 16pt bold header is drawn at the top of the first page with the title in the format: `Daily Briefing — {site_name} — {day_of_week} — {date}` (e.g. `Daily Briefing — London Wall — Tuesday — 27 May 2026`). `day_of_week` is the full English weekday name; `date` is formatted as `DD MMM YYYY`. The PDF metadata `info.Title` is also set to this title string so it displays correctly when the PDF opens in a browser tab. Site name is resolved via the `sites` join on the `daily_briefings` record.
-   - **Page 1+ — Attendees Table:** navy header bar, date and site name, then one row per signatory with columns: Role / Name / Company / Signature image (embedded PNG/JPG, 100×35px) / Signed At timestamp (`DD MMM YYYY, HH:MM` in en-GB locale). Column x positions: margin=50, +130, +240, +350. Rows are 60pt tall to accommodate signature images.
-   - **Following pages — Briefing Content:** AP name, supervisor name, forecast, site details, any other business, lifting schedule, checklist answers (green YES / red NO text). Logo header on each page.
-   - **Final page — AP Sign-Off:** date, AP name, role, embedded submitter signature image (200×60px).
-4. Storage: `await adminClient.storage.from('daily-briefing-archive').remove([pdfPath])` then `.upload(pdfPath, pdfBytes, { upsert: false })`. Path: `{site_id}/{briefing_id}.pdf`.
-5. Update `daily_briefings`: set `archive_pdf_url = pdfPath`, `status = 'archived'`, `archived_at = new Date().toISOString()`.
+**Page order:**
+
+1. **Cover page** — navy header bar; document title (`Daily Briefing - {site_name} - {day_of_week} - {date}` using plain hyphens as separators); date and site name; creator name and role (real role fetched from `profiles.role`); forecast summary (wind speed, gust speed, weather condition); site details snapshot (first aider, location, muster point, changes on site); Yes/No checklist summary (all 9 questions with YES/NO answers); total signatory count; generation timestamp.
+
+2. **Full briefing content pages** — every section of `daily_briefings.content_html` is parsed and rendered with word-wrapping and automatic page breaks as needed. Sections rendered in order: Risk Statement, Part 1 Forecast, Part 2 Site Details, Changes on Site, Wind Speed Limits table, Lifting Protocols list, Lifting Calculation Example, Any Other Business, Lifting Schedule, Reporting of Defects and Incidents, Have You Covered the Following checklist, and the Appointed Person / Lifting Supervisor table. HTML `<table>` elements are parsed row-by-row (`<tr>`/`<td>`/`<th>`) and rendered with columns evenly distributed across the usable page width with per-cell word wrapping — never stacked as individual lines.
+
+3. **Creator sign-off page** — heading "Briefing Created and Signed By"; creator's full name; real role label (fetched from `profiles.role`, not a hard-coded string); embedded submitter signature image (200×60px) with adequate spacing below the label; date of briefing.
+
+4. **Attendees / Signatures table** (last page or pages) — navy header bar; one row per signatory with columns: Name / Role / Company / drawn signature image (100×35px) / Signed At timestamp (`DD MMM YYYY, HH:MM` in en-GB locale). Rows are 60pt tall to accommodate signature images. Overflows to additional pages automatically.
+
+**Storage:**
+```
+await adminClient.storage.from('daily-briefing-archive').remove([pdfPath])
+await adminClient.storage.from('daily-briefing-archive').upload(pdfPath, pdfBytes, { upsert: false })
+```
+Path: `{site_id}/{briefing_id}.pdf`. Always `remove()` then `upload()` — never upsert.
+
+**Database update:** set `archive_pdf_url = pdfPath`, `status = 'archived'`, `archived_at = new Date().toISOString()`.
 
 **Cron mode vs. single mode:** If called without a `briefing_id` body param, the function queries all active briefings for today and processes each one. If called with `briefing_id`, it processes only that briefing.
 
@@ -993,6 +1002,8 @@ One active briefing per site per day, enforced by partial unique index.
 
 The following must be configured in the Supabase Dashboard **before** the Daily Briefing feature will work. None of these are applied automatically.
 
+> **IMPORTANT — Edge Functions must be redeployed after every code change.** Editing the local file in `supabase/functions/daily-briefing-generate-pdf/index.ts` and pushing to GitHub does **NOT** update the live function. The PDF is generated by the deployed function on Supabase's servers. After any change you **MUST** redeploy via the Supabase Dashboard: Edge Functions → `daily-briefing-generate-pdf` → Code tab → paste the full updated code → **Deploy updates**. Verify the deployment took effect by checking the Logs tab for the version log line (e.g. `DAILY-BRIEFING-GENERATE-PDF: v6`). This same rule applies to all Edge Functions (`generate-signoff`, `extract-docx-text`, etc.).
+
 #### Database Tables
 Run `supabase/daily_briefing_schema.sql` in the SQL Editor. This creates all four tables, RLS policies, the partial unique index, and supporting indexes.
 
@@ -1052,7 +1063,59 @@ The Archive screen is accessible to all roles via the **Archive** button on the 
 
 ---
 
-### 10.14 Boilerplate Text Content
+### 10.14 PDF Encoding and Rendering Rules
+
+These rules apply to the `daily-briefing-generate-pdf` Edge Function and any future Edge Function that uses `pdf-lib` to draw text.
+
+#### Character Encoding (WinAnsi / Latin-1)
+
+pdf-lib `StandardFonts` (Helvetica, Times-Roman, Courier, etc.) only support **WinAnsi (Latin-1) encoding**. Any character outside that range renders as garbage — for example, an em-dash (`—`) from the stored HTML appears as `ÔÇö` in the PDF.
+
+**All text drawn to the PDF MUST pass through a `clean()` sanitiser before being passed to `drawText()`.** The sanitiser must at minimum:
+
+- Convert em-dash (`—`) and en-dash (`–`) to a plain hyphen-minus (`-`)
+- Convert left/right double curly quotes (`“` / `”`) to straight double quote (`"`)
+- Convert left/right single curly quotes (`‘` / `’`) to straight single quote / apostrophe (`'`)
+- Convert multiplication sign (`×`, `×`) to the letter `x`
+- Strip any remaining non-ASCII characters (codepoint > 127) so they do not produce garbage glyphs
+
+The document title uses **plain hyphens (`-`)** as separators — never em-dashes — so it remains readable in the PDF tab title and anywhere the title string is displayed.
+
+#### HTML Entity Decoding
+
+The `content_html` stored in `daily_briefings` contains HTML entities produced by `buildBriefingHtml`. These must be decoded to their ASCII equivalents before the text is drawn. Key mappings:
+
+| Entity | Decoded to |
+|---|---|
+| `&#10003;` (checkmark ✓) | stripped entirely — the YES/NO text already conveys the answer |
+| `&#10007;` (ballot X ✗) | stripped entirely |
+| `&mdash;` / `&#8212;` | `-` (hyphen) |
+| `&ndash;` / `&#8211;` | `-` (hyphen) |
+| `&times;` / `&#215;` | `x` |
+| `&minus;` / `&#8722;` | `-` (hyphen) |
+| `&deg;` / `&#176;` | stripped or replaced with empty string |
+| `&amp;` | `&` |
+| `&lt;` | `<` |
+| `&gt;` | `>` |
+| `&nbsp;` | ` ` (space) |
+
+A catch-all pass must strip any remaining numeric entities (`&#NNN;`) and named entities (`&name;`) that were not explicitly matched above, so no raw entity text appears in the rendered PDF.
+
+#### HTML Table Rendering
+
+HTML `<table>` elements in `content_html` must be parsed as **whole rows**, not as a flat stream of text. The correct approach:
+
+1. Detect `<tr>` blocks within the table.
+2. Extract each `<td>` / `<th>` cell value within the row.
+3. Distribute the cells evenly across the usable page width (e.g. `(pageWidth - 2 * margin) / columnCount`).
+4. Render each cell with per-cell word wrapping at its allocated column width.
+5. Advance `y` by the height of the tallest wrapped cell in the row before drawing the next row.
+
+**Never** render table cells as stacked individual lines — this collapses the table into an unreadable vertical list and loses the column relationship between cells.
+
+---
+
+### 10.15 Boilerplate Text Content
 
 All static boilerplate text is defined in `lib/daily-briefing-template.ts` as private constants. Edit in one place — never duplicate in screen files or the Edge Function.
 

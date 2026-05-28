@@ -1,29 +1,25 @@
 // Edge Function: daily-briefing-generate-pdf
-console.log('DAILY-BRIEFING-GENERATE-PDF: v1')
+console.log('DAILY-BRIEFING-GENERATE-PDF: v6 - table rows render as columns')
 //
 // Generates an archive PDF for one or more daily briefings.
 //
 // Called two ways:
 //   1. From the app (AP/supervisor): POST { briefing_id: "..." }
-//      → processes that single briefing immediately.
+//      -> processes that single briefing immediately.
 //   2. From pg_cron (daily at 18:00): POST {}
-//      → processes all active briefings created today across all sites.
+//      -> processes all active briefings created today across all sites.
 //
-// For each eligible briefing the function:
-//   1. Fetches the briefing record + all signature records.
-//   2. Builds a multi-section PDF with pdf-lib:
-//        - Cover page: title, date, site, AP and supervisor, key details
-//        - Attendees pages: table with Name / Role / Company / Signature image / Signed At
-//        - Briefing content pages: weather, checklist, schedule as formatted text
-//        - AP sign-off: submitter name and their signature image
-//   3. Uploads the PDF to daily-briefing-archive/{site_id}/{briefing_id}.pdf
-//   4. Updates daily_briefings: archive_pdf_url, status = 'archived', archived_at = NOW()
+// Page order (fixed in v3):
+//   1. Cover page   — title, date, site, creator, weather summary, checklist, sig count
+//   2. Content pages — every block parsed from content_html (full boilerplate + dynamic fields)
+//   3. Sign-off page — submitter name, actual role, signature image (never cut off)
+//   4. Attendees    — Name / Role / Company / Signature image / Signed At (LAST)
 //
-// Deployment: supabase functions deploy daily-briefing-generate-pdf
+// Deployment: paste into Supabase Dashboard -> Edge Functions -> daily-briefing-generate-pdf -> Deploy
 // Required secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
 import { createClient } from 'npm:@supabase/supabase-js@^2'
-import { PDFDocument, StandardFonts, rgb, PageSizes } from 'npm:pdf-lib@^1'
+import { PDFDocument, PDFFont, StandardFonts, rgb, PageSizes } from 'npm:pdf-lib@^1'
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -36,6 +32,91 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
   })
+}
+
+// Sanitise ALL text for pdf-lib StandardFonts (WinAnsi — no Unicode above Latin-1).
+// Uses unicode escape codes (not literal glyphs) so the regex never depends on source
+// file encoding. EVERY string drawn to the PDF must pass through this function.
+function clean(text: string | null | undefined): string {
+  if (!text) return ''
+  return String(text)
+    .replace(/[—–]/g, '-')   // em-dash, en-dash -> hyphen
+    .replace(/[‘’]/g, "'")   // curly single quotes -> straight apostrophe
+    .replace(/[“”]/g, '"')   // curly double quotes -> straight
+    .replace(/…/g, '...')         // ellipsis -> three dots
+    .replace(/[ ]/g, ' ')         // non-breaking space -> regular space
+    .replace(/[^\x00-\x7F]/g, '')      // strip any remaining non-ASCII
+}
+
+// Parse HTML string into text blocks for PDF rendering.
+// Table rows (<tr>) are captured as a single block with a cells[] array so they
+// can be drawn side by side. All other elements (h1/h2/h3/p/li) become flat text blocks.
+function htmlToPdfBlocks(html: string): { type: string; text: string; cells?: string[] }[] {
+  if (!html) return []
+  const blocks: { type: string; text: string; cells?: string[] }[] = []
+
+  function decodeEntities(s: string): string {
+    return s
+      .replace(/<[^>]+>/g, '')
+      .replace(/&#10003;|&#x2713;|&check;/gi, '')
+      .replace(/&#10007;|&#x2717;/gi, '')
+      .replace(/&mdash;|&#8212;|&ndash;|&#8211;|&minus;|&#8722;/gi, '-')
+      .replace(/&times;|&#215;/gi, 'x')
+      .replace(/&deg;|&#176;/gi, ' deg')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#\d+;/g, '')
+      .replace(/&#x[0-9a-f]+;/gi, '')
+      .replace(/&[a-z]+;/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  // Process in document order: match whole <tr> rows and individual h1/h2/h3/p/li elements.
+  const tokenRegex = /<tr[^>]*>([\s\S]*?)<\/tr>|<(h1|h2|h3|p|li)[^>]*>([\s\S]*?)<\/\2>/gi
+  let m: RegExpExecArray | null
+  while ((m = tokenRegex.exec(html)) !== null) {
+    if (m[1] !== undefined) {
+      // Table row — extract each cell
+      const cellRegex = /<(td|th)[^>]*>([\s\S]*?)<\/\1>/gi
+      const cells: string[] = []
+      let c: RegExpExecArray | null
+      while ((c = cellRegex.exec(m[1])) !== null) {
+        cells.push(clean(decodeEntities(c[2])))
+      }
+      if (cells.some(x => x.length > 0)) {
+        blocks.push({ type: 'tr', text: '', cells })
+      }
+    } else {
+      // Heading, paragraph, or list item
+      const tag = m[2].toLowerCase()
+      const text = clean(decodeEntities(m[3]))
+      if (text) blocks.push({ type: tag, text })
+    }
+  }
+  return blocks
+}
+
+// Wrap a single (already-clean) string into lines that fit within maxWidth pt.
+function wrapText(text: string, fnt: PDFFont, size: number, maxWidth: number): string[] {
+  const words = text.split(' ')
+  const lines: string[] = []
+  let current = ''
+  for (const word of words) {
+    const test = current ? `${current} ${word}` : word
+    if (fnt.widthOfTextAtSize(test, size) > maxWidth) {
+      if (current) lines.push(current)
+      current = word
+    } else {
+      current = test
+    }
+  }
+  if (current) lines.push(current)
+  return lines.length ? lines : ['']
 }
 
 interface BriefingRecord {
@@ -64,6 +145,8 @@ interface BriefingRecord {
   supervisor_name: string
   submitter_name: string
   submitter_signature_url: string | null
+  content_html: string | null
+  created_by: string | null
   status: string
   site: { name: string } | null
 }
@@ -86,15 +169,15 @@ const ROLE_LABELS: Record<string, string> = {
 }
 
 const YES_NO_LABELS: [string, keyof BriefingRecord][] = [
-  ['Everyone clear on which crane?', 'q1_crane_clear'],
-  ['All activities planned?', 'q2_activities_planned'],
-  ['All deliveries scheduled?', 'q3_deliveries_scheduled'],
-  ['Site changes communicated?', 'q4_changes_communicated'],
+  ['Everyone clear on which crane?',     'q1_crane_clear'],
+  ['All activities planned?',            'q2_activities_planned'],
+  ['All deliveries scheduled?',          'q3_deliveries_scheduled'],
+  ['Site changes communicated?',         'q4_changes_communicated'],
   ['Pre-use accessory checks reminded?', 'q5_accessory_checks'],
-  ["Safety First communicated?", 'q6_safety_first'],
-  ['Crane secured each floor?', 'q7_crane_secured'],
-  ['Whistles checked?', 'q8_whistles_working'],
-  ['Radio check completed?', 'q9_radio_check'],
+  ['Safety First communicated?',         'q6_safety_first'],
+  ['Crane secured each floor?',          'q7_crane_secured'],
+  ['Whistles checked?',                  'q8_whistles_working'],
+  ['Radio check completed?',             'q9_radio_check'],
 ]
 
 async function processOneBriefing(
@@ -122,96 +205,123 @@ async function processOneBriefing(
 
   const sigs = (signatures as SigRecord[]) ?? []
 
-  // Build document title used in the PDF header and metadata
-  const siteName = briefing.site?.name ?? 'Unknown Site'
-  const dayOfWeek = new Date(briefing.briefing_date + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday: 'long' })
-  const dateFormatted = new Date(briefing.briefing_date + 'T00:00:00Z').toLocaleDateString('en-GB', {
-    day: '2-digit', month: 'short', year: 'numeric',
-  })
-  const docTitle = `Daily Briefing — ${siteName} — ${dayOfWeek} — ${dateFormatted}`
+  // Resolve creator's actual role from profiles (AP or crane_supervisor)
+  let creatorRole = 'appointed_person'
+  if (briefing.created_by) {
+    const { data: creatorProfile } = await adminClient
+      .from('profiles')
+      .select('role')
+      .eq('id', briefing.created_by)
+      .single<{ role: string }>()
+    if (creatorProfile?.role) creatorRole = creatorProfile.role
+  }
 
-  const pdfDoc = await PDFDocument.create()
+  // All date/name strings go through clean() so no Unicode leaks into pdf-lib.
+  // Title separator is plain hyphen — never an em-dash.
+  const siteName   = clean(briefing.site?.name ?? 'Unknown Site')
+  const briefDate  = new Date(briefing.briefing_date + 'T00:00:00Z')
+  const dayOfWeek  = clean(briefDate.toLocaleDateString('en-GB', { weekday: 'long' }))
+  const dateFmt    = clean(briefDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }))
+  const dateLong   = clean(briefDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))
+  const docTitle   = clean(`Daily Briefing - ${siteName} - ${dayOfWeek} - ${dateFmt}`)
+
+  const pdfDoc  = await PDFDocument.create()
   pdfDoc.setTitle(docTitle)
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
+  const font     = await pdfDoc.embedFont(StandardFonts.Helvetica)
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
   const [pageW, pageH] = PageSizes.A4
-  const margin = 50
+  const margin      = 50
+  const usableWidth = pageW - margin * 2
+  const navy        = rgb(0.06, 0.15, 0.26)
+  const black       = rgb(0, 0, 0)
+  const grey        = rgb(0.5, 0.5, 0.5)
+  const midGrey     = rgb(0.4, 0.4, 0.4)
 
-  function drawText(
-    page: ReturnType<typeof pdfDoc.addPage>,
-    text: string,
+  // dt() is the ONLY gateway to page.drawText — applies clean() to every string.
+  // No raw string ever reaches page.drawText directly.
+  function dt(
+    pg: any,
+    text: string | number | boolean | null | undefined,
     x: number,
     y: number,
     size: number,
     bold = false,
-    color = rgb(0, 0, 0)
+    color = black,
   ) {
-    page.drawText(String(text ?? '').substring(0, 120), { x, y, size, font: bold ? boldFont : font, color })
+    const safe = clean(String(text ?? ''))
+    if (!safe) return
+    pg.drawText(safe, { x, y, size, font: bold ? boldFont : font, color })
   }
 
-  function drawHLine(page: ReturnType<typeof pdfDoc.addPage>, y: number, thick = 0.5) {
-    page.drawLine({ start: { x: margin, y }, end: { x: pageW - margin, y }, thickness: thick, color: rgb(0.85, 0.85, 0.85) })
+  function drawHLine(pg: any, y: number, thick = 0.5) {
+    pg.drawLine({
+      start: { x: margin, y },
+      end:   { x: pageW - margin, y },
+      thickness: thick,
+      color: rgb(0.85, 0.85, 0.85),
+    })
   }
 
-  // ── Cover page ───────────────────────────────────────────────────────────
+  // ── PAGE 1: Cover ────────────────────────────────────────────────────────────
   let page = pdfDoc.addPage([pageW, pageH])
   let y = pageH - margin
 
-  // Header bar
-  page.drawRectangle({ x: 0, y: pageH - 60, width: pageW, height: 60, color: rgb(0.06, 0.15, 0.26) })
-  drawText(page, 'DAILY TEAM BRIEFING: LIFTING OPERATIONS', margin, pageH - 38, 14, true, rgb(1, 1, 1))
+  // Navy header bar
+  page.drawRectangle({ x: 0, y: pageH - 60, width: pageW, height: 60, color: navy })
+  dt(page, 'DAILY TEAM BRIEFING: LIFTING OPERATIONS', margin, pageH - 38, 14, true, rgb(1, 1, 1))
 
-  // Document title — centred below header bar, 16pt bold
-  const titleFontSize = 16
-  const titleTextWidth = boldFont.widthOfTextAtSize(docTitle, titleFontSize)
-  const titleX = Math.max(margin, (pageW - titleTextWidth) / 2)
-  page.drawText(docTitle, { x: titleX, y: pageH - 82, size: titleFontSize, font: boldFont, color: rgb(0.06, 0.15, 0.26) })
+  // Centred document title — uses plain hyphens built above
+  const titleSize  = 16
+  const titleWidth = boldFont.widthOfTextAtSize(docTitle, titleSize)
+  const titleX     = Math.max(margin, (pageW - titleWidth) / 2)
+  dt(page, docTitle, titleX, pageH - 82, titleSize, true, navy)
 
-  y = pageH - 108  // shifted down from -80 to accommodate the title above
+  y = pageH - 108
 
-  const dateStr = new Date(briefing.briefing_date + 'T00:00:00Z').toLocaleDateString('en-GB', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-  })
-  drawText(page, dateStr, margin, y, 12, true)
+  dt(page, dateLong, margin, y, 12, true)
   y -= 18
-  drawText(page, `Site: ${briefing.site?.name ?? 'Unknown Site'}`, margin, y, 10)
+  dt(page, `Site: ${siteName}`, margin, y, 10)
   y -= 16
-  drawText(page, `Appointed Person: ${briefing.ap_name}`, margin, y, 10)
+  dt(page, `Appointed Person: ${clean(briefing.ap_name)}`, margin, y, 10)
   y -= 14
-  drawText(page, `Lifting Supervisor: ${briefing.supervisor_name}`, margin, y, 10)
+  dt(page, `Lifting Supervisor: ${clean(briefing.supervisor_name)}`, margin, y, 10)
   y -= 14
-  drawText(page, `Submitted By: ${briefing.submitter_name}`, margin, y, 10)
+  dt(page, `Submitted By: ${clean(briefing.submitter_name)}`, margin, y, 10)
   y -= 22
 
   drawHLine(page, y, 1)
   y -= 16
 
   // Forecast
-  drawText(page, 'Forecast', margin, y, 11, true, rgb(0.06, 0.15, 0.26))
+  dt(page, 'Forecast', margin, y, 11, true, navy)
   y -= 14
-  drawText(page, `Wind: ${briefing.wind_speed ?? '—'}   Gust: ${briefing.gust_speed ?? '—'}   Conditions: ${briefing.weather_condition ?? '—'}`, margin + 8, y, 9)
+  dt(
+    page,
+    `Wind: ${clean(briefing.wind_speed ?? '-')}   Gust: ${clean(briefing.gust_speed ?? '-')}   Conditions: ${clean(briefing.weather_condition ?? '-')}`,
+    margin + 8, y, 9
+  )
   y -= 20
 
-  // Location / First Aider / Muster
-  drawText(page, 'Site Details', margin, y, 11, true, rgb(0.06, 0.15, 0.26))
+  // Site details
+  dt(page, 'Site Details', margin, y, 11, true, navy)
   y -= 14
-  drawText(page, `First Aider: ${briefing.first_aider_name ?? '—'}`, margin + 8, y, 9)
+  dt(page, `First Aider: ${clean(briefing.first_aider_name ?? '-')}`, margin + 8, y, 9)
   y -= 12
-  drawText(page, `Location: ${briefing.site_location ?? '—'}`, margin + 8, y, 9)
+  dt(page, `Location: ${clean(briefing.site_location ?? '-')}`, margin + 8, y, 9)
   y -= 12
-  drawText(page, `Muster Point: ${briefing.muster_point ?? '—'}`, margin + 8, y, 9)
+  dt(page, `Muster Point: ${clean(briefing.muster_point ?? '-')}`, margin + 8, y, 9)
   y -= 20
 
-  // Checklist
-  drawText(page, 'Have You Covered the Following?', margin, y, 11, true, rgb(0.06, 0.15, 0.26))
+  // Checklist summary
+  dt(page, 'Have You Covered the Following?', margin, y, 11, true, navy)
   y -= 14
   for (const [label, key] of YES_NO_LABELS) {
     const val = briefing[key]
-    const answer = val === true ? 'YES' : val === false ? 'NO' : '—'
-    const answerColor = val === true ? rgb(0.09, 0.64, 0.29) : val === false ? rgb(0.86, 0.15, 0.15) : rgb(0.5, 0.5, 0.5)
-    drawText(page, label, margin + 8, y, 8)
-    drawText(page, answer, pageW - margin - 30, y, 8, true, answerColor)
+    const answer      = val === true ? 'YES' : val === false ? 'NO' : '-'
+    const answerColor = val === true ? rgb(0.09, 0.64, 0.29) : val === false ? rgb(0.86, 0.15, 0.15) : grey
+    dt(page, label,  margin + 8,         y, 8)
+    dt(page, answer, pageW - margin - 30, y, 8, true, answerColor)
     y -= 11
     if (y < 100) break
   }
@@ -220,31 +330,164 @@ async function processOneBriefing(
   drawHLine(page, y, 0.5)
   y -= 14
 
-  drawText(page, `Signatures collected: ${sigs.length}`, margin, y, 9, false, rgb(0.4, 0.4, 0.4))
+  dt(page, `Signatures collected: ${sigs.length}`, margin, y, 9, false, midGrey)
   y -= 12
-  if (sigs.length > 0) {
-    const genTime = new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
-    drawText(page, `PDF generated: ${genTime}`, margin, y, 8, false, rgb(0.5, 0.5, 0.5))
+  const genTime = clean(new Date().toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }))
+  dt(page, `PDF generated: ${genTime}`, margin, y, 8, false, grey)
+
+  // ── PAGES 2+: Full briefing content ─────────────────────────────────────────
+  // Renders EVERY block from content_html so the archived PDF is a complete record:
+  // changes on site, lifting schedule, any other business, all boilerplate sections.
+  if (briefing.content_html) {
+    const blocks = htmlToPdfBlocks(briefing.content_html)
+    if (blocks.length > 0) {
+      page = pdfDoc.addPage([pageW, pageH])
+      y = pageH - margin
+
+      // Section header bar
+      page.drawRectangle({ x: 0, y: pageH - 50, width: pageW, height: 50, color: navy })
+      dt(page, 'BRIEFING CONTENT', margin, pageH - 33, 13, true, rgb(1, 1, 1))
+      y = pageH - 70
+
+      for (const block of blocks) {
+        if (block.type === 'tr' && block.cells) {
+          // Draw table row cells side by side, evenly distributed across usable width
+          if (y < 70) { page = pdfDoc.addPage([pageW, pageH]); y = pageH - margin }
+          const cells = block.cells
+          const colWidth = usableWidth / cells.length
+          let maxLines = 1
+          // Pre-wrap each cell to find the tallest row height
+          const wrappedCells: string[][] = cells.map((cellText) => {
+            const words = cellText.split(' ')
+            const cellLines: string[] = []
+            let line = ''
+            for (const word of words) {
+              const test = line ? `${line} ${word}` : word
+              if (font.widthOfTextAtSize(test, 9) > colWidth - 8 && line) {
+                cellLines.push(line); line = word
+              } else { line = test }
+            }
+            if (line) cellLines.push(line)
+            if (cellLines.length > maxLines) maxLines = cellLines.length
+            return cellLines
+          })
+          // Draw each cell's lines in its column
+          wrappedCells.forEach((cellLines, ci) => {
+            const cx = margin + ci * colWidth
+            cellLines.forEach((ln, li) => {
+              page.drawText(ln, { x: cx, y: y - li * 11, size: 9, font })
+            })
+          })
+          y -= maxLines * 11 + 6
+          // Light row separator
+          page.drawLine({ start: { x: margin, y: y + 2 }, end: { x: pageW - margin, y: y + 2 }, thickness: 0.3, color: rgb(0.9, 0.9, 0.9) })
+          y -= 4
+        } else {
+          const isBold      = block.type === 'h1' || block.type === 'h2' || block.type === 'h3'
+          const size        = block.type === 'h1' ? 16 : block.type === 'h2' ? 13 : block.type === 'h3' ? 11 : 10
+          const fnt         = isBold ? boldFont : font
+          const prefix      = block.type === 'li' ? '• ' : ''
+          const xIndent     = block.type === 'li' ? margin + 12 : margin
+          const maxLineW    = usableWidth - (block.type === 'li' ? 12 : 0)
+          const lineSpacing = size + 4
+
+          // Extra breathing room above headings
+          if (isBold) y -= 6
+
+          // text is already clean() from htmlToPdfBlocks — wrapText just splits
+          const lines = wrapText(prefix + block.text, fnt, size, maxLineW)
+          for (const line of lines) {
+            if (y < 60) {
+              page = pdfDoc.addPage([pageW, pageH])
+              y = pageH - margin
+            }
+            // clean() called again here as the zero-exceptions guarantee
+            page.drawText(clean(line), { x: xIndent, y, size, font: fnt, color: black })
+            y -= lineSpacing
+          }
+
+          y -= isBold ? 4 : 2
+        }
+      }
+    }
   }
 
-  // ── Attendees pages ───────────────────────────────────────────────────────
+  // ── Creator sign-off section ──────────────────────────────────────────────────
+  // Space required: heading(16) + gap(40) + date(11)+gap(20) + name(11)+gap(20)
+  //   + role(11)+gap(30) + label(11)+gap(80) + image(65) + bottom margin(50) ~ 365pt
+  // If insufficient room on the current page, start a fresh one.
+  if (y < 280) {
+    page = pdfDoc.addPage([pageW, pageH])
+    y = pageH - 60
+  } else {
+    // Visual separator from content above
+    y -= 20
+    drawHLine(page, y, 1)
+    y -= 20
+  }
+
+  dt(page, 'BRIEFING CREATED AND SIGNED BY', margin, y, 16, true, navy)
+  y -= 40
+  dt(page, `Date: ${dayOfWeek} ${dateFmt}`, margin, y, 11)
+  y -= 20
+  dt(page, `Name: ${clean(briefing.submitter_name)}`, margin, y, 11)
+  y -= 20
+  dt(page, `Role: ${clean(ROLE_LABELS[creatorRole] ?? creatorRole)}`, margin, y, 11)
+  y -= 30
+  dt(page, 'Signature:', margin, y, 11, true)
+  y -= 80  // reserve 80pt so the image renders BELOW the label, never cut off
+
+  // Draw submitter signature image at current y (pdf-lib y = bottom-left of image).
+  // Image: 160w x 65h. Bottom at y, top at y+65. Safe as long as y >= 50 (margin).
+  if (briefing.submitter_signature_url) {
+    try {
+      const { data: sigFile } = await adminClient.storage
+        .from('daily-briefing-signatures')
+        .download(briefing.submitter_signature_url)
+      if (sigFile) {
+        const sigBytes = await sigFile.arrayBuffer()
+        let submitterSigImage
+        try { submitterSigImage = await pdfDoc.embedPng(new Uint8Array(sigBytes)) }
+        catch { submitterSigImage = await pdfDoc.embedJpg(new Uint8Array(sigBytes)) }
+        page.drawImage(submitterSigImage, { x: margin, y, width: 160, height: 65 })
+      } else {
+        dt(page, '[signature on file]', margin, y + 30, 10, false, grey)
+      }
+    } catch (e) {
+      console.error('Failed to embed submitter signature:', e)
+      dt(page, '[signature on file]', margin, y + 30, 10, false, grey)
+    }
+  } else {
+    dt(page, '[signature on file]', margin, y + 30, 10, false, grey)
+  }
+
+  // ── Attendees / Signatures table — LAST ──────────────────────────────────────
+  // Kept structurally identical to v2 — operative signature rendering is correct.
   if (sigs.length > 0) {
     page = pdfDoc.addPage([pageW, pageH])
     y = pageH - margin
 
-    drawText(page, 'ATTENDEES — SIGNATURES', margin, y, 13, true, rgb(0.06, 0.15, 0.26))
+    dt(page, 'ATTENDEES - SIGNATURES', margin, y, 13, true, navy)
     y -= 8
     drawHLine(page, y, 1)
     y -= 20
 
-    const COL = { name: margin, role: margin + 130, company: margin + 240, signed: margin + 350 }
+    const COL = {
+      name:    margin,
+      role:    margin + 130,
+      company: margin + 240,
+      signed:  margin + 350,
+    }
     const rowH = 60
 
-    function drawHeaders(p: ReturnType<typeof pdfDoc.addPage>, yPos: number) {
-      drawText(p, 'Name',      COL.name,    yPos, 9, true)
-      drawText(p, 'Role',      COL.role,    yPos, 9, true)
-      drawText(p, 'Company',   COL.company, yPos, 9, true)
-      drawText(p, 'Signed At', COL.signed,  yPos, 9, true)
+    function drawHeaders(pg: any, yPos: number) {
+      dt(pg, 'Name',      COL.name,    yPos, 9, true)
+      dt(pg, 'Role',      COL.role,    yPos, 9, true)
+      dt(pg, 'Company',   COL.company, yPos, 9, true)
+      dt(pg, 'Signed At', COL.signed,  yPos, 9, true)
     }
 
     drawHeaders(page, y)
@@ -264,11 +507,11 @@ async function processOneBriefing(
 
       const textY = y - 22
 
-      drawText(page, (sig.full_name ?? '').substring(0, 22), COL.name,    textY, 9)
-      drawText(page, (ROLE_LABELS[sig.role] ?? sig.role ?? '').substring(0, 18), COL.role,    textY, 9)
-      drawText(page, (sig.company ?? '').substring(0, 18), COL.company, textY, 9)
+      dt(page, clean(sig.full_name ?? '').substring(0, 22),                        COL.name,    textY, 9)
+      dt(page, clean(ROLE_LABELS[sig.role] ?? sig.role ?? '').substring(0, 18),    COL.role,    textY, 9)
+      dt(page, clean(sig.company ?? '').substring(0, 18),                          COL.company, textY, 9)
 
-      // Signature image in the last column
+      // Operative signature image — rendering kept exactly as v2 (confirmed correct)
       if (sig.signature_image_url) {
         try {
           const { data: sigFile } = await adminClient.storage
@@ -283,63 +526,26 @@ async function processOneBriefing(
           }
         } catch (e) {
           console.error('Failed to embed attendee signature:', e)
-          drawText(page, '[signature]', COL.signed, textY, 8, false, rgb(0.6, 0.6, 0.6))
+          dt(page, '[signature]', COL.signed, textY, 8, false, grey)
         }
       }
 
-      const ts = new Date(sig.signed_at).toLocaleString('en-GB', {
+      const ts = clean(new Date(sig.signed_at).toLocaleString('en-GB', {
         day: '2-digit', month: 'short', year: 'numeric',
         hour: '2-digit', minute: '2-digit', hour12: false,
-      })
-      drawText(page, ts, COL.signed, y - 32, 7, false, rgb(0.4, 0.4, 0.4))
+      }))
+      dt(page, ts, COL.signed, y - 32, 7, false, midGrey)
 
       drawHLine(page, y - 38, 0.3)
       y -= rowH
     }
   }
 
-  // ── AP sign-off page ──────────────────────────────────────────────────────
-  if (briefing.submitter_signature_url) {
-    page = pdfDoc.addPage([pageW, pageH])
-    y = pageH - margin
-
-    drawText(page, 'APPOINTED PERSON SIGN-OFF', margin, y, 13, true, rgb(0.06, 0.15, 0.26))
-    y -= 8
-    drawHLine(page, y, 1)
-    y -= 24
-
-    drawText(page, `Date: ${dateStr}`, margin, y, 10)
-    y -= 16
-    drawText(page, `Name: ${briefing.submitter_name}`, margin, y, 10)
-    y -= 16
-    drawText(page, `Role: ${briefing.ap_name === briefing.submitter_name ? 'Appointed Person Resident' : 'Crane Supervisor'}`, margin, y, 10)
-    y -= 24
-
-    drawText(page, 'Signature:', margin, y, 10, true)
-    y -= 8
-
-    try {
-      const { data: sigFile } = await adminClient.storage
-        .from('daily-briefing-signatures')
-        .download(briefing.submitter_signature_url)
-      if (sigFile) {
-        const sigBytes = await sigFile.arrayBuffer()
-        let sigImage
-        try { sigImage = await pdfDoc.embedPng(new Uint8Array(sigBytes)) }
-        catch { sigImage = await pdfDoc.embedJpg(new Uint8Array(sigBytes)) }
-        page.drawImage(sigImage, { x: margin, y: y - 50, width: 200, height: 60 })
-      }
-    } catch (e) {
-      console.error('Failed to embed submitter signature:', e)
-      drawText(page, '[signature not available]', margin, y - 20, 9, false, rgb(0.6, 0.6, 0.6))
-    }
-  }
-
-  // ── Upload PDF ────────────────────────────────────────────────────────────
+  // ── Upload PDF ───────────────────────────────────────────────────────────────
   const pdfBytes = await pdfDoc.save()
-  const pdfPath = `${briefing.site_id}/${briefingId}.pdf`
+  const pdfPath  = `${briefing.site_id}/${briefingId}.pdf`
 
-  // Always remove then upload to avoid stale cached versions
+  // Always remove then upload — never upsert on storage
   await adminClient.storage.from('daily-briefing-archive').remove([pdfPath])
   const { error: uploadError } = await adminClient.storage
     .from('daily-briefing-archive')
@@ -350,13 +556,12 @@ async function processOneBriefing(
     return
   }
 
-  // Archive the briefing
   const { error: updateError } = await adminClient
     .from('daily_briefings')
     .update({
       archive_pdf_url: pdfPath,
-      status: 'archived',
-      archived_at: new Date().toISOString(),
+      status:          'archived',
+      archived_at:     new Date().toISOString(),
     })
     .eq('id', briefingId)
 
@@ -377,7 +582,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   )
 
   let body: { briefing_id?: string } = {}
-  try { body = await req.json() } catch { /* empty body is fine for cron */ }
+  try { body = await req.json() } catch { /* empty body is fine for cron mode */ }
 
   try {
     if (body.briefing_id) {
@@ -385,7 +590,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return json({ ok: true })
     }
 
-    // Cron mode: process all active briefings created today
+    // Cron mode: find all active briefings created today and archive each one
     const today = new Date().toISOString().split('T')[0]
     const { data: eligible, error } = await adminClient
       .from('daily_briefings')
