@@ -1,26 +1,52 @@
-import { View, Text, StyleSheet } from 'react-native'
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native'
+import { useRouter } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { Breadcrumb } from '@/components/breadcrumb'
-import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme'
+import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
 
 export default function SupervisorChecks() {
+  const router = useRouter()
+
   return (
     <ScreenWrapper>
       <Breadcrumb items={[
         { label: 'Dashboard', href: '/(appointed-person)/' },
         { label: 'Supervisor Checks' },
       ]} />
+
       <View style={styles.container}>
-        <View style={styles.iconWrap}>
-          <Text style={styles.icon}>✅</Text>
-        </View>
-        <Text style={styles.title}>Supervisor Checks</Text>
-        <Text style={styles.desc}>
-          Pre-lift inspection checklists completed by the crane supervisor.{'\n'}
-          Covers site conditions, exclusion zones, communication, and equipment readiness.
+        <Text style={styles.pageTitle}>Supervisor Checks</Text>
+        <Text style={styles.pageDesc}>
+          Pre-lift inspection checklists and safety meetings completed by the crane supervisor.
         </Text>
-        <View style={styles.comingSoon}>
-          <Text style={styles.comingSoonText}>Coming soon</Text>
+
+        {/* Crane Meeting — fully built */}
+        <TouchableOpacity
+          style={styles.featureCard}
+          onPress={() => router.push('/(appointed-person)/crane-meeting/' as any)}
+          activeOpacity={0.8}
+        >
+          <View style={styles.featureCardLeft}>
+            <Text style={styles.featureIcon}>🏗</Text>
+          </View>
+          <View style={styles.featureCardBody}>
+            <Text style={styles.featureTitle}>Crane Meeting</Text>
+            <Text style={styles.featureDesc}>
+              Weekly lifting operations meeting — set up, read, sign, and archive.
+            </Text>
+          </View>
+          <Text style={styles.featureChevron}>›</Text>
+        </TouchableOpacity>
+
+        {/* Other checks — placeholder */}
+        <View style={styles.comingSoonCard}>
+          <Text style={styles.comingSoonTitle}>Pre-Lift Inspection Checklists</Text>
+          <Text style={styles.comingSoonDesc}>
+            Covers site conditions, exclusion zones, communication, and equipment readiness.
+          </Text>
+          <View style={styles.comingSoonBadge}>
+            <Text style={styles.comingSoonBadgeText}>Coming soon</Text>
+          </View>
         </View>
       </View>
     </ScreenWrapper>
@@ -29,42 +55,84 @@ export default function SupervisorChecks() {
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: Spacing.xxl,
+    padding: Spacing.md,
+    gap: Spacing.sm,
   },
-  iconWrap: {
-    width: 80,
-    height: 80,
-    borderRadius: 20,
-    backgroundColor: '#0F766E20',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Spacing.lg,
-  },
-  icon: { fontSize: 40 },
-  title: {
+  pageTitle: {
     fontSize: FontSize.xl,
-    fontWeight: '700',
+    fontWeight: '800',
     color: Colors.text,
-    marginBottom: Spacing.sm,
+    marginBottom: 2,
   },
-  desc: {
+  pageDesc: {
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 21,
-    marginBottom: Spacing.lg,
+    lineHeight: 20,
+    marginBottom: Spacing.sm,
   },
-  comingSoon: {
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
+  featureCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    gap: Spacing.md,
+    ...Shadow.sm,
+  },
+  featureCardLeft: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: Colors.primary + '15',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  featureIcon: { fontSize: 26 },
+  featureCardBody: { flex: 1 },
+  featureTitle: {
+    fontSize: FontSize.base,
+    fontWeight: '700',
+    color: Colors.text,
+    marginBottom: 2,
+  },
+  featureDesc: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    lineHeight: 16,
+  },
+  featureChevron: {
+    fontSize: 22,
+    color: Colors.textMuted,
+    fontWeight: '300',
+  },
+  comingSoonCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    gap: Spacing.xs,
+    ...Shadow.sm,
+    opacity: 0.6,
+  },
+  comingSoonTitle: {
+    fontSize: FontSize.base,
+    fontWeight: '700',
+    color: Colors.text,
+  },
+  comingSoonDesc: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    lineHeight: 16,
+  },
+  comingSoonBadge: {
+    alignSelf: 'flex-start',
+    marginTop: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
     backgroundColor: Colors.border,
     borderRadius: BorderRadius.full,
   },
-  comingSoonText: {
-    fontSize: FontSize.sm,
+  comingSoonBadgeText: {
+    fontSize: 11,
     fontWeight: '600',
     color: Colors.textSecondary,
   },

@@ -34,6 +34,11 @@ export default function AppointedPersonLayout() {
       <Stack.Screen name="toolbox-talk/sign" options={{ title: 'Sign Talk', presentation: 'modal' }} />
       <Stack.Screen name="loler-register" options={{ title: 'LOLER Register' }} />
       <Stack.Screen name="supervisor-checks" options={{ title: 'Supervisor Checks' }} />
+      <Stack.Screen name="crane-meeting/index" options={{ title: 'Crane Meeting' }} />
+      <Stack.Screen name="crane-meeting/setup" options={{ title: 'Set Up Meeting' }} />
+      <Stack.Screen name="crane-meeting/sign" options={{ title: 'Sign Meeting', presentation: 'modal' }} />
+      <Stack.Screen name="crane-meeting/attendance" options={{ title: 'Who Signed', presentation: 'modal' }} />
+      <Stack.Screen name="crane-meeting/archive" options={{ title: 'Archive' }} />
       <Stack.Screen name="operator-checks" options={{ title: 'Operator Checks' }} />
       <Stack.Screen name="operatives/index" options={{ title: 'Operatives' }} />
       <Stack.Screen name="operatives/add" options={{ title: 'Add Operative' }} />
