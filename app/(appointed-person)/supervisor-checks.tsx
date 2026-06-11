@@ -3,9 +3,12 @@ import { useRouter } from 'expo-router'
 import { ScreenWrapper } from '@/components/screen-wrapper'
 import { Breadcrumb } from '@/components/breadcrumb'
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '@/constants/theme'
+import { useAuth } from '@/lib/auth'
 
 export default function SupervisorChecks() {
   const router = useRouter()
+  const { role } = useAuth()
+  const canManage = role === 'appointed_person' || role === 'crane_supervisor'
 
   return (
     <ScreenWrapper>
@@ -37,6 +40,26 @@ export default function SupervisorChecks() {
           </View>
           <Text style={styles.featureChevron}>›</Text>
         </TouchableOpacity>
+
+        {/* Rescue Kit Checklist — visible to AP and crane_supervisor only */}
+        {canManage && (
+          <TouchableOpacity
+            style={styles.featureCard}
+            onPress={() => router.push('/(appointed-person)/rescue-kit/' as any)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.featureCardLeft}>
+              <Text style={styles.featureIcon}>🧰</Text>
+            </View>
+            <View style={styles.featureCardBody}>
+              <Text style={styles.featureTitle}>Rescue Kit Checklist</Text>
+              <Text style={styles.featureDesc}>
+                Weekly per-site tower crane rescue kit verification and sign-off.
+              </Text>
+            </View>
+            <Text style={styles.featureChevron}>›</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Other checks — placeholder */}
         <View style={styles.comingSoonCard}>

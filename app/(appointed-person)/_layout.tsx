@@ -39,6 +39,10 @@ export default function AppointedPersonLayout() {
       <Stack.Screen name="crane-meeting/sign" options={{ title: 'Sign Meeting', presentation: 'modal' }} />
       <Stack.Screen name="crane-meeting/attendance" options={{ title: 'Who Signed', presentation: 'modal' }} />
       <Stack.Screen name="crane-meeting/archive" options={{ title: 'Archive' }} />
+      <Stack.Screen name="rescue-kit/index" options={{ title: 'Rescue Kit Checklist' }} />
+      <Stack.Screen name="rescue-kit/add" options={{ title: 'Add Rescue Kit' }} />
+      <Stack.Screen name="rescue-kit/detail" options={{ title: 'Kit Detail & Sign' }} />
+      <Stack.Screen name="rescue-kit/archive" options={{ title: 'Archive' }} />
       <Stack.Screen name="operator-checks" options={{ title: 'Operator Checks' }} />
       <Stack.Screen name="operatives/index" options={{ title: 'Operatives' }} />
       <Stack.Screen name="operatives/add" options={{ title: 'Add Operative' }} />
